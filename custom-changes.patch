@@ -1,0 +1,1066 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index a4dea9b..f204a51 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -12,11 +12,11 @@ android {
+     compileSdk = 37
+ 
+     defaultConfig {
+-        applicationId = "com.github.nacabaro.vbhelper"
++        applicationId = "com.github.nacabaro.vbhelper.custom"
+         minSdk = 28
+         targetSdk = 37
+         versionCode = 1
+-        versionName = "Alpha 0.6.5"
++        versionName = "Alpha 0.6.5-custom"
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+     }
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/daos/CharacterDao.kt b/app/src/main/java/com/github/nacabaro/vbhelper/daos/CharacterDao.kt
+index 378e92f..c2d1a4d 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/daos/CharacterDao.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/daos/CharacterDao.kt
+@@ -6,6 +6,7 @@ import androidx.room.Query
+ import com.github.nacabaro.vbhelper.domain.card.CardCharacter
+ import com.github.nacabaro.vbhelper.domain.characters.Sprite
+ import com.github.nacabaro.vbhelper.dtos.CharacterDtos
++import com.github.nacabaro.vbhelper.dtos.ForgeDtos
+ import kotlinx.coroutines.flow.Flow
+ 
+ @Dao
+@@ -87,4 +88,25 @@ interface CharacterDao {
+     """
+     )
+     fun getEvolutionRequirementsForCard(characterId: Long): Flow<List<CharacterDtos.EvolutionRequirementsWithSpritesAndObtained>>
++
++    @Query(
++        """
++        SELECT
++            c.id AS id,
++            c.charaIndex AS charaIndex,
++            c.stage AS stage,
++            c.attribute AS attribute,
++            s.spriteIdle1 AS spriteIdle,
++            s.width AS spriteWidth,
++            s.height AS spriteHeight,
++            c.nameSprite AS nameSprite,
++            c.nameWidth AS nameWidth,
++            c.nameHeight AS nameHeight
++        FROM CardCharacter c
++        JOIN Sprite s ON c.spriteId = s.id
++        WHERE c.cardId = :cardId
++        ORDER BY c.charaIndex ASC
++    """
++    )
++    suspend fun getCharacterOptionsForCard(cardId: Long): List<ForgeDtos.CardCharacterOption>
+ }
+\ No newline at end of file
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/dtos/ForgeDtos.kt b/app/src/main/java/com/github/nacabaro/vbhelper/dtos/ForgeDtos.kt
+new file mode 100644
+index 0000000..4c4476c
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/dtos/ForgeDtos.kt
+@@ -0,0 +1,31 @@
++package com.github.nacabaro.vbhelper.dtos
++
++import com.github.cfogrady.vbnfc.data.NfcCharacter
++
++object ForgeDtos {
++    /**
++     * One Digimon that exists on an imported card, with its idle sprite,
++     * used by the Create Digimon picker.
++     */
++    data class CardCharacterOption(
++        val id: Long,
++        val charaIndex: Int,
++        val stage: Int,
++        val attribute: NfcCharacter.Attribute,
++        val spriteIdle: ByteArray,
++        val spriteWidth: Int,
++        val spriteHeight: Int,
++        val nameSprite: ByteArray,
++        val nameWidth: Int,
++        val nameHeight: Int
++    ) {
++        override fun equals(other: Any?): Boolean {
++            if (this === other) return true
++            if (javaClass != other?.javaClass) return false
++            other as CardCharacterOption
++            return id == other.id
++        }
++
++        override fun hashCode(): Int = id.hashCode()
++    }
++}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
+index 86b474d..450ff7d 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
+@@ -36,6 +36,8 @@ import com.github.nacabaro.vbhelper.screens.adventureScreen.AdventureScreenContr
+ import com.github.nacabaro.vbhelper.screens.cardScreen.CardAdventureScreen
+ import com.github.nacabaro.vbhelper.screens.cardScreen.CardScreenControllerImpl
+ import com.github.nacabaro.vbhelper.screens.settingsScreen.CreditsScreen
++import com.github.nacabaro.vbhelper.screens.forgeScreen.CreateCharacterScreen
++import com.github.nacabaro.vbhelper.screens.forgeScreen.EditCharacterScreen
+ import com.github.nacabaro.vbhelper.screens.spriteViewer.SpriteViewerControllerImpl
+ import com.github.nacabaro.vbhelper.screens.storageScreen.StorageScreenControllerImpl
+ import com.github.nacabaro.vbhelper.source.StorageRepository
+@@ -167,6 +169,20 @@ fun AppNavigation(
+                         .adventureScreenController
+                 )
+             }
++            composable(NavigationItems.CreateCharacter.route) {
++                CreateCharacterScreen(
++                    navController = navController
++                )
++            }
++            composable(NavigationItems.EditCharacter.route) {
++                val characterId = it.arguments?.getString("characterId")?.toLongOrNull()
++                if (characterId != null) {
++                    EditCharacterScreen(
++                        navController = navController,
++                        characterId = characterId
++                    )
++                }
++            }
+             composable(NavigationItems.Credits.route) {
+                 CreditsScreen(
+                     navController = navController
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
+index 77b9b91..9b088fd 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
+@@ -93,6 +93,18 @@ sealed class NavigationItems(
+         R.string.nav_adventure
+     )
+ 
++    object CreateCharacter : NavigationItems(
++        "CreateCharacter",
++        R.drawable.baseline_catching_pokemon_24,
++        R.string.nav_create_character
++    )
++
++    object EditCharacter : NavigationItems(
++        "EditCharacter/{characterId}",
++        R.drawable.baseline_catching_pokemon_24,
++        R.string.nav_edit_character
++    )
++
+     object Credits : NavigationItems(
+         "Credits",
+         R.drawable.baseline_data_24,
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/CreateCharacterScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/CreateCharacterScreen.kt
+new file mode 100644
+index 0000000..7017961
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/CreateCharacterScreen.kt
+@@ -0,0 +1,224 @@
++package com.github.nacabaro.vbhelper.screens.forgeScreen
++
++import android.widget.Toast
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.material3.Button
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.FilterChip
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.unit.dp
++import androidx.navigation.NavController
++import com.github.nacabaro.vbhelper.R
++import com.github.nacabaro.vbhelper.components.CharacterEntry
++import com.github.nacabaro.vbhelper.components.TopBanner
++import com.github.nacabaro.vbhelper.di.VBHelper
++import com.github.nacabaro.vbhelper.domain.card.Card
++import com.github.nacabaro.vbhelper.dtos.ForgeDtos
++import com.github.nacabaro.vbhelper.navigation.NavigationItems
++import com.github.nacabaro.vbhelper.source.CharacterForgeRepository
++import com.github.nacabaro.vbhelper.source.ForgeStats
++import com.github.nacabaro.vbhelper.utils.BitmapData
++import com.github.nacabaro.vbhelper.utils.DeviceType
++import kotlinx.coroutines.launch
++
++/**
++ * Pick an imported card, pick a Digimon on it, set its stats, and save it to
++ * storage. From storage it can be sent to the bracelet like any scanned Digimon.
++ */
++@Composable
++fun CreateCharacterScreen(
++    navController: NavController
++) {
++    val application = LocalContext.current.applicationContext as VBHelper
++    val repository = remember { CharacterForgeRepository(application.container.db) }
++    val scope = rememberCoroutineScope()
++
++    var cards by remember { mutableStateOf<List<Card>>(emptyList()) }
++    var selectedCard by remember { mutableStateOf<Card?>(null) }
++    var options by remember { mutableStateOf<List<ForgeDtos.CardCharacterOption>>(emptyList()) }
++    var selectedOption by remember { mutableStateOf<ForgeDtos.CardCharacterOption?>(null) }
++    var deviceType by remember { mutableStateOf(DeviceType.BEDevice) }
++    var stats by remember { mutableStateOf(ForgeStats()) }
++    var saving by remember { mutableStateOf(false) }
++
++    LaunchedEffect(Unit) {
++        cards = repository.getCards()
++    }
++
++    LaunchedEffect(selectedCard) {
++        selectedOption = null
++        options = selectedCard?.let { repository.getCharacterOptions(it.id) } ?: emptyList()
++        // BE Memory cards only work on a Vital Bracelet BE.
++        if (selectedCard?.isBEm == true) deviceType = DeviceType.BEDevice
++    }
++
++    Scaffold(
++        topBar = {
++            TopBanner(
++                text = stringResource(R.string.forge_create_title),
++                onBackClick = { navController.popBackStack() }
++            )
++        }
++    ) { contentPadding ->
++        LazyColumn(
++            verticalArrangement = Arrangement.spacedBy(8.dp),
++            modifier = Modifier
++                .fillMaxSize()
++                .padding(top = contentPadding.calculateTopPadding())
++                .padding(horizontal = 16.dp)
++        ) {
++            if (cards.isEmpty()) {
++                item {
++                    Text(
++                        text = stringResource(R.string.forge_no_cards),
++                        modifier = Modifier.padding(vertical = 24.dp)
++                    )
++                }
++                return@LazyColumn
++            }
++
++            item { StepTitle(stringResource(R.string.forge_step_card)) }
++            items(cards, key = { it.id }) { card ->
++                FilterChip(
++                    selected = selectedCard?.id == card.id,
++                    onClick = { selectedCard = card },
++                    label = { Text(card.name) },
++                    modifier = Modifier.fillMaxWidth()
++                )
++            }
++
++            if (selectedCard != null) {
++                item { StepTitle(stringResource(R.string.forge_step_digimon)) }
++                items(options.chunked(4)) { row ->
++                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
++                        row.forEach { option ->
++                            CharacterEntry(
++                                icon = BitmapData(
++                                    bitmap = option.spriteIdle,
++                                    width = option.spriteWidth,
++                                    height = option.spriteHeight
++                                ),
++                                multiplier = 3,
++                                cardColors = if (selectedOption?.id == option.id) {
++                                    CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
++                                } else {
++                                    CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
++                                },
++                                onClick = { selectedOption = option },
++                                modifier = Modifier.weight(1f)
++                            )
++                        }
++                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
++                    }
++                }
++            }
++
++            if (selectedOption != null) {
++                item {
++                    Text(
++                        text = stringResource(
++                            R.string.forge_selected_summary,
++                            selectedOption!!.charaIndex,
++                            selectedOption!!.stage,
++                            selectedOption!!.attribute.name
++                        ),
++                        style = MaterialTheme.typography.bodyMedium
++                    )
++                }
++
++                item { StepTitle(stringResource(R.string.forge_step_bracelet)) }
++                item {
++                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                        FilterChip(
++                            selected = deviceType == DeviceType.BEDevice,
++                            onClick = { deviceType = DeviceType.BEDevice },
++                            label = { Text(stringResource(R.string.forge_bracelet_be)) }
++                        )
++                        if (selectedCard?.isBEm != true) {
++                            FilterChip(
++                                selected = deviceType == DeviceType.VBDevice,
++                                onClick = { deviceType = DeviceType.VBDevice },
++                                label = { Text(stringResource(R.string.forge_bracelet_vb)) }
++                            )
++                        }
++                    }
++                }
++
++                item { StepTitle(stringResource(R.string.forge_step_stats)) }
++                item {
++                    StatsForm(
++                        stats = stats,
++                        deviceType = deviceType,
++                        onChange = { stats = it }
++                    )
++                }
++
++                item {
++                    Column(Modifier.padding(vertical = 16.dp)) {
++                        Text(
++                            text = stringResource(R.string.forge_test_warning),
++                            style = MaterialTheme.typography.bodySmall,
++                            modifier = Modifier.padding(bottom = 8.dp)
++                        )
++                        Button(
++                            enabled = !saving,
++                            onClick = {
++                                val card = selectedCard
++                                val option = selectedOption
++                                if (card != null && option != null) {
++                                saving = true
++                                scope.launch {
++                                    val newId = repository.createCharacter(card, option, deviceType, stats)
++                                    saving = false
++                                    Toast.makeText(
++                                        application,
++                                        application.getString(R.string.forge_created_toast),
++                                        Toast.LENGTH_SHORT
++                                    ).show()
++                                    navController.navigate(
++                                        NavigationItems.Scan.route.replace("{characterId}", newId.toString())
++                                    ) {
++                                        popUpTo(NavigationItems.Storage.route)
++                                    }
++                                }
++                                }
++                            },
++                            modifier = Modifier.fillMaxWidth()
++                        ) {
++                            Text(stringResource(R.string.forge_create_and_send))
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun StepTitle(text: String) {
++    Text(
++        text = text,
++        style = MaterialTheme.typography.titleLarge,
++        modifier = Modifier.padding(top = 12.dp)
++    )
++}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/EditCharacterScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/EditCharacterScreen.kt
+new file mode 100644
+index 0000000..3f4992a
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/EditCharacterScreen.kt
+@@ -0,0 +1,114 @@
++package com.github.nacabaro.vbhelper.screens.forgeScreen
++
++import android.widget.Toast
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.material3.Button
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.unit.dp
++import androidx.navigation.NavController
++import com.github.nacabaro.vbhelper.R
++import com.github.nacabaro.vbhelper.components.TopBanner
++import com.github.nacabaro.vbhelper.di.VBHelper
++import com.github.nacabaro.vbhelper.source.CharacterForgeRepository
++import com.github.nacabaro.vbhelper.source.ForgeStats
++import com.github.nacabaro.vbhelper.utils.DeviceType
++import kotlinx.coroutines.launch
++
++/**
++ * Change the stats of a Digimon in storage. The new values go to the
++ * bracelet the next time it is sent with "Send to watch".
++ */
++@Composable
++fun EditCharacterScreen(
++    navController: NavController,
++    characterId: Long
++) {
++    val application = LocalContext.current.applicationContext as VBHelper
++    val repository = remember { CharacterForgeRepository(application.container.db) }
++    val scope = rememberCoroutineScope()
++
++    var stats by remember { mutableStateOf<ForgeStats?>(null) }
++    var deviceType by remember { mutableStateOf(DeviceType.BEDevice) }
++    var saving by remember { mutableStateOf(false) }
++
++    LaunchedEffect(characterId) {
++        val (type, loaded) = repository.loadStats(characterId)
++        deviceType = type
++        stats = loaded
++    }
++
++    Scaffold(
++        topBar = {
++            TopBanner(
++                text = stringResource(R.string.forge_edit_title),
++                onBackClick = { navController.popBackStack() }
++            )
++        }
++    ) { contentPadding ->
++        LazyColumn(
++            modifier = Modifier
++                .fillMaxSize()
++                .padding(top = contentPadding.calculateTopPadding())
++                .padding(horizontal = 16.dp)
++        ) {
++            val current = stats
++            if (current == null) {
++                item { Text(stringResource(R.string.forge_loading), modifier = Modifier.padding(24.dp)) }
++                return@LazyColumn
++            }
++
++            item {
++                StatsForm(
++                    stats = current,
++                    deviceType = deviceType,
++                    onChange = { stats = it }
++                )
++            }
++
++            item { Column {
++                Text(
++                    text = stringResource(R.string.forge_edit_hint),
++                    style = MaterialTheme.typography.bodySmall,
++                    modifier = Modifier.padding(vertical = 8.dp)
++                )
++                Button(
++                    enabled = !saving,
++                    onClick = {
++                        saving = true
++                        scope.launch {
++                            repository.saveStats(characterId, current)
++                            saving = false
++                            Toast.makeText(
++                                application,
++                                application.getString(R.string.forge_saved_toast),
++                                Toast.LENGTH_SHORT
++                            ).show()
++                            navController.popBackStack()
++                        }
++                    },
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .padding(bottom = 24.dp)
++                ) {
++                    Text(stringResource(R.string.forge_save))
++                }
++            } }
++        }
++    }
++}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/StatsForm.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/StatsForm.kt
+new file mode 100644
+index 0000000..c62861e
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/forgeScreen/StatsForm.kt
+@@ -0,0 +1,167 @@
++package com.github.nacabaro.vbhelper.screens.forgeScreen
++
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.text.KeyboardOptions
++import androidx.compose.material3.Checkbox
++import androidx.compose.material3.FilterChip
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.input.KeyboardType
++import androidx.compose.ui.unit.dp
++import com.github.cfogrady.vbnfc.data.NfcCharacter
++import com.github.nacabaro.vbhelper.R
++import com.github.nacabaro.vbhelper.source.ForgeLimits
++import com.github.nacabaro.vbhelper.source.ForgeStats
++import com.github.nacabaro.vbhelper.utils.DeviceType
++
++/**
++ * Number boxes for every editable stat. Values outside a field's range are
++ * pulled back into it as you type, and the allowed range is shown underneath.
++ */
++@Composable
++fun StatsForm(
++    stats: ForgeStats,
++    deviceType: DeviceType,
++    onChange: (ForgeStats) -> Unit,
++    modifier: Modifier = Modifier
++) {
++    val isBe = deviceType == DeviceType.BEDevice
++
++    Column(
++        verticalArrangement = Arrangement.spacedBy(8.dp),
++        modifier = modifier.fillMaxWidth()
++    ) {
++        SectionTitle(stringResource(R.string.forge_section_basics))
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            StatField(stringResource(R.string.forge_vitals), stats.vitalPoints, ForgeLimits.VITALS, Modifier.weight(1f)) {
++                onChange(stats.copy(vitalPoints = it))
++            }
++            StatField(
++                if (isBe) stringResource(R.string.forge_training_pp) else stringResource(R.string.forge_trophies),
++                stats.trophies, ForgeLimits.TROPHIES, Modifier.weight(1f)
++            ) { onChange(stats.copy(trophies = it)) }
++        }
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            StatField(stringResource(R.string.forge_mood), stats.mood, ForgeLimits.MOOD, Modifier.weight(1f)) {
++                onChange(stats.copy(mood = it))
++            }
++            StatField(stringResource(R.string.forge_age), stats.ageInDays, ForgeLimits.AGE, Modifier.weight(1f)) {
++                onChange(stats.copy(ageInDays = it))
++            }
++        }
++        StatField(stringResource(R.string.forge_evo_timer), stats.transformationCountdown, ForgeLimits.TIMER_MINUTES) {
++            onChange(stats.copy(transformationCountdown = it))
++        }
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Checkbox(checked = stats.injured, onCheckedChange = { onChange(stats.copy(injured = it)) })
++            Text(stringResource(R.string.forge_injured))
++        }
++
++        SectionTitle(stringResource(R.string.forge_section_battles))
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            StatField(stringResource(R.string.forge_stage_wins), stats.currentPhaseBattlesWon, ForgeLimits.BATTLES, Modifier.weight(1f)) {
++                onChange(stats.copy(currentPhaseBattlesWon = it))
++            }
++            StatField(stringResource(R.string.forge_stage_losses), stats.currentPhaseBattlesLost, ForgeLimits.BATTLES, Modifier.weight(1f)) {
++                onChange(stats.copy(currentPhaseBattlesLost = it))
++            }
++        }
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            StatField(stringResource(R.string.forge_total_wins), stats.totalBattlesWon, ForgeLimits.BATTLES, Modifier.weight(1f)) {
++                onChange(stats.copy(totalBattlesWon = it))
++            }
++            StatField(stringResource(R.string.forge_total_losses), stats.totalBattlesLost, ForgeLimits.BATTLES, Modifier.weight(1f)) {
++                onChange(stats.copy(totalBattlesLost = it))
++            }
++        }
++
++        if (isBe) {
++            SectionTitle(stringResource(R.string.forge_section_be))
++            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                StatField("HP", stats.trainingHp, ForgeLimits.BE_TRAINING, Modifier.weight(1f)) {
++                    onChange(stats.copy(trainingHp = it))
++                }
++                StatField("AP", stats.trainingAp, ForgeLimits.BE_TRAINING, Modifier.weight(1f)) {
++                    onChange(stats.copy(trainingAp = it))
++                }
++                StatField("BP", stats.trainingBp, ForgeLimits.BE_TRAINING, Modifier.weight(1f)) {
++                    onChange(stats.copy(trainingBp = it))
++                }
++            }
++            StatField(stringResource(R.string.forge_training_time), stats.remainingTrainingTimeInMinutes, ForgeLimits.TIMER_MINUTES) {
++                onChange(stats.copy(remainingTrainingTimeInMinutes = it))
++            }
++            Text(stringResource(R.string.forge_ability_rarity), style = MaterialTheme.typography.labelLarge)
++            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
++                NfcCharacter.AbilityRarity.entries.take(3).forEach { rarity ->
++                    FilterChip(
++                        selected = stats.abilityRarity == rarity,
++                        onClick = { onChange(stats.copy(abilityRarity = rarity)) },
++                        label = { Text(rarity.name) }
++                    )
++                }
++            }
++            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
++                NfcCharacter.AbilityRarity.entries.drop(3).forEach { rarity ->
++                    FilterChip(
++                        selected = stats.abilityRarity == rarity,
++                        onClick = { onChange(stats.copy(abilityRarity = rarity)) },
++                        label = { Text(rarity.name) }
++                    )
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun SectionTitle(text: String) {
++    Text(
++        text = text,
++        style = MaterialTheme.typography.titleMedium,
++        modifier = Modifier.padding(top = 8.dp)
++    )
++}
++
++@Composable
++private fun StatField(
++    label: String,
++    value: Int,
++    range: IntRange,
++    modifier: Modifier = Modifier.fillMaxWidth(),
++    onValue: (Int) -> Unit
++) {
++    // Keep the raw text so the box can be emptied while typing.
++    var text by remember(value) { mutableStateOf(value.toString()) }
++
++    OutlinedTextField(
++        value = text,
++        onValueChange = { input ->
++            val digits = input.filter { it.isDigit() }.take(5)
++            text = digits
++            if (digits.isNotEmpty()) {
++                val clamped = digits.toInt().coerceIn(range)
++                if (clamped.toString() != digits) text = clamped.toString()
++                onValue(clamped)
++            }
++        },
++        label = { Text(label) },
++        supportingText = { Text("${range.first}–${range.last}") },
++        singleLine = true,
++        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
++        modifier = modifier
++    )
++}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
+index ec0173d..a9b25d7 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
+@@ -43,6 +43,7 @@ fun StorageDialog(
+     onDismissRequest: () -> Unit,
+     onClickDelete: () -> Unit,
+     onSendToBracelet: () -> Unit,
++    onClickEdit: () -> Unit,
+     onClickSetActive: () -> Unit,
+     onClickSendToAdventure: (time: Long) -> Unit
+ ) {
+@@ -136,6 +137,13 @@ fun StorageDialog(
+                                     Text(text = stringResource(R.string.storage_set_active))
+                                 }
+                             }
++                Button(
++                    onClick = onClickEdit,
++                    modifier = Modifier
++                        .fillMaxWidth()
++                ) {
++                    Text(text = stringResource(R.string.forge_edit_button))
++                }
+                 Button(
+                     onClick = {
+                         onSendToAdventureClicked = true
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
+index cc9d3d0..b94cbd1 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
+@@ -12,7 +12,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
+ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+ import androidx.compose.foundation.lazy.grid.items
+ import androidx.compose.foundation.rememberScrollState
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Add
+ import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.ExtendedFloatingActionButton
++import androidx.compose.material3.Icon
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.Scaffold
+ import androidx.compose.material3.Text
+@@ -59,6 +63,13 @@ fun StorageScreen(
+                     navController.navigate(NavigationItems.Adventure.route)
+                 }
+             )
++        },
++        floatingActionButton = {
++            ExtendedFloatingActionButton(
++                onClick = { navController.navigate(NavigationItems.CreateCharacter.route) },
++                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
++                text = { Text(stringResource(R.string.forge_create_button)) }
++            )
+         }
+     ) { contentPadding ->
+         if (characterList.isEmpty()) {
+@@ -129,6 +140,13 @@ fun StorageScreen(
+                             navController.navigate(NavigationItems.Home.route)
+                         }
+                 },
++                onClickEdit = {
++                    val id = selectedCharacter!!
++                    selectedCharacter = null
++                    navController.navigate(
++                        NavigationItems.EditCharacter.route.replace("{characterId}", id.toString())
++                    )
++                },
+                 onSendToBracelet = {
+                     navController.navigate(
+                         NavigationItems.Scan.route.replace(
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/source/CharacterForgeRepository.kt b/app/src/main/java/com/github/nacabaro/vbhelper/source/CharacterForgeRepository.kt
+new file mode 100644
+index 0000000..5cfe07f
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/source/CharacterForgeRepository.kt
+@@ -0,0 +1,238 @@
++package com.github.nacabaro.vbhelper.source
++
++import com.github.cfogrady.vbnfc.data.NfcCharacter
++import com.github.cfogrady.vbnfc.vb.SpecialMission
++import com.github.nacabaro.vbhelper.database.AppDatabase
++import com.github.nacabaro.vbhelper.domain.card.Card
++import com.github.nacabaro.vbhelper.domain.device_data.BECharacterData
++import com.github.nacabaro.vbhelper.domain.device_data.SpecialMissions
++import com.github.nacabaro.vbhelper.domain.device_data.UserCharacter
++import com.github.nacabaro.vbhelper.domain.device_data.VBCharacterData
++import com.github.nacabaro.vbhelper.dtos.ForgeDtos
++import com.github.nacabaro.vbhelper.utils.DeviceType
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.flow.firstOrNull
++import kotlinx.coroutines.withContext
++
++/**
++ * Editable stats for a Digimon. Every value is kept inside [ForgeLimits]
++ * before it is written, so the bracelet never receives an out-of-range value.
++ */
++data class ForgeStats(
++    val ageInDays: Int = 0,
++    val mood: Int = 50,
++    val vitalPoints: Int = 0,
++    val transformationCountdown: Int = 0,
++    val injured: Boolean = false,
++    val trophies: Int = 0,
++    val currentPhaseBattlesWon: Int = 0,
++    val currentPhaseBattlesLost: Int = 0,
++    val totalBattlesWon: Int = 0,
++    val totalBattlesLost: Int = 0,
++    // BE only
++    val trainingHp: Int = 0,
++    val trainingAp: Int = 0,
++    val trainingBp: Int = 0,
++    val remainingTrainingTimeInMinutes: Int = 0,
++    val abilityRarity: NfcCharacter.AbilityRarity = NfcCharacter.AbilityRarity.None
++) {
++    fun clamped(): ForgeStats = copy(
++        ageInDays = ageInDays.coerceIn(ForgeLimits.AGE),
++        mood = mood.coerceIn(ForgeLimits.MOOD),
++        vitalPoints = vitalPoints.coerceIn(ForgeLimits.VITALS),
++        transformationCountdown = transformationCountdown.coerceIn(ForgeLimits.TIMER_MINUTES),
++        trophies = trophies.coerceIn(ForgeLimits.TROPHIES),
++        currentPhaseBattlesWon = currentPhaseBattlesWon.coerceIn(ForgeLimits.BATTLES),
++        currentPhaseBattlesLost = currentPhaseBattlesLost.coerceIn(ForgeLimits.BATTLES),
++        totalBattlesWon = totalBattlesWon.coerceIn(ForgeLimits.BATTLES),
++        totalBattlesLost = totalBattlesLost.coerceIn(ForgeLimits.BATTLES),
++        trainingHp = trainingHp.coerceIn(ForgeLimits.BE_TRAINING),
++        trainingAp = trainingAp.coerceIn(ForgeLimits.BE_TRAINING),
++        trainingBp = trainingBp.coerceIn(ForgeLimits.BE_TRAINING),
++        remainingTrainingTimeInMinutes = remainingTrainingTimeInMinutes.coerceIn(ForgeLimits.TIMER_MINUTES)
++    )
++}
++
++object ForgeLimits {
++    val AGE = 0..99
++    val MOOD = 0..100
++    val VITALS = 0..9999
++    val TIMER_MINUTES = 0..9999
++    val TROPHIES = 0..999
++    val BATTLES = 0..999
++    val BE_TRAINING = 0..999
++}
++
++class CharacterForgeRepository(
++    private val db: AppDatabase
++) {
++    suspend fun getCards(): List<Card> = withContext(Dispatchers.IO) {
++        db.cardDao().getAllCards()
++    }
++
++    suspend fun getCharacterOptions(cardId: Long): List<ForgeDtos.CardCharacterOption> =
++        withContext(Dispatchers.IO) {
++            db.characterDao().getCharacterOptionsForCard(cardId)
++        }
++
++    /**
++     * Builds a brand-new Digimon in storage, the same way VBHelper stores a scanned one,
++     * so the existing "Send to watch" flow can transfer it.
++     * Returns the new character's id.
++     */
++    suspend fun createCharacter(
++        card: Card,
++        option: ForgeDtos.CardCharacterOption,
++        deviceType: DeviceType,
++        stats: ForgeStats
++    ): Long = withContext(Dispatchers.IO) {
++        val s = stats.clamped()
++        val dao = db.userCharacterDao()
++
++        val characterId = dao.insertCharacterData(
++            UserCharacter(
++                charId = option.id,
++                ageInDays = s.ageInDays,
++                mood = s.mood,
++                vitalPoints = s.vitalPoints,
++                transformationCountdown = s.transformationCountdown,
++                injuryStatus = if (s.injured) NfcCharacter.InjuryStatus.Injury
++                               else NfcCharacter.InjuryStatus.None,
++                trophies = s.trophies,
++                currentPhaseBattlesWon = s.currentPhaseBattlesWon,
++                currentPhaseBattlesLost = s.currentPhaseBattlesLost,
++                totalBattlesWon = s.totalBattlesWon,
++                totalBattlesLost = s.totalBattlesLost,
++                activityLevel = 0,
++                heartRateCurrent = 0,
++                characterType = deviceType,
++                isActive = false
++            )
++        )
++
++        if (deviceType == DeviceType.BEDevice) {
++            dao.insertBECharacterData(
++                BECharacterData(
++                    id = characterId,
++                    trainingHp = s.trainingHp,
++                    trainingAp = s.trainingAp,
++                    trainingBp = s.trainingBp,
++                    remainingTrainingTimeInMinutes = s.remainingTrainingTimeInMinutes,
++                    itemEffectMentalStateValue = 0,
++                    itemEffectMentalStateMinutesRemaining = 0,
++                    itemEffectActivityLevelValue = 0,
++                    itemEffectActivityLevelMinutesRemaining = 0,
++                    itemEffectVitalPointsChangeValue = 0,
++                    itemEffectVitalPointsChangeMinutesRemaining = 0,
++                    abilityRarity = s.abilityRarity,
++                    abilityType = 0,
++                    abilityBranch = 0,
++                    abilityReset = 0,
++                    rank = 0,
++                    itemType = 0,
++                    itemMultiplier = 0,
++                    itemRemainingTime = 0,
++                    otp0 = "",
++                    otp1 = "",
++                    // Same defaults VBHelper uses for Digimon imported from VitalWear
++                    minorVersion = 0,
++                    majorVersion = 0
++                )
++            )
++        } else {
++            dao.insertVBCharacterData(
++                VBCharacterData(
++                    id = characterId,
++                    generation = 1,
++                    totalTrophies = s.trophies
++                )
++            )
++            // A real Vital Bracelet always reports four mission slots; store four empty ones.
++            val emptyMissions = Array(4) {
++                SpecialMissions(
++                    characterId = characterId,
++                    goal = 0,
++                    watchId = 0,
++                    progress = 0,
++                    status = SpecialMission.Status.UNAVAILABLE,
++                    timeElapsedInMinutes = 0,
++                    timeLimitInMinutes = 0,
++                    missionType = SpecialMission.Type.NONE
++                )
++            }
++            dao.insertSpecialMissions(*emptyMissions)
++        }
++
++        val now = System.currentTimeMillis()
++        dao.insertTransformation(characterId, option.charaIndex, card.id, now)
++        db.dexDao().insertCharacter(option.charaIndex, card.id, now)
++
++        characterId
++    }
++
++    suspend fun loadStats(characterId: Long): Pair<DeviceType, ForgeStats> = withContext(Dispatchers.IO) {
++        val dao = db.userCharacterDao()
++        val c = dao.getCharacter(characterId)
++        val be = if (c.characterType == DeviceType.BEDevice) dao.getBeData(characterId).firstOrNull() else null
++
++        c.characterType to ForgeStats(
++            ageInDays = c.ageInDays,
++            mood = c.mood,
++            vitalPoints = c.vitalPoints,
++            transformationCountdown = c.transformationCountdown,
++            injured = c.injuryStatus != NfcCharacter.InjuryStatus.None,
++            trophies = c.trophies,
++            currentPhaseBattlesWon = c.currentPhaseBattlesWon,
++            currentPhaseBattlesLost = c.currentPhaseBattlesLost,
++            totalBattlesWon = c.totalBattlesWon,
++            totalBattlesLost = c.totalBattlesLost,
++            trainingHp = be?.trainingHp ?: 0,
++            trainingAp = be?.trainingAp ?: 0,
++            trainingBp = be?.trainingBp ?: 0,
++            remainingTrainingTimeInMinutes = be?.remainingTrainingTimeInMinutes ?: 0,
++            abilityRarity = be?.abilityRarity ?: NfcCharacter.AbilityRarity.None
++        )
++    }
++
++    suspend fun saveStats(characterId: Long, stats: ForgeStats) = withContext(Dispatchers.IO) {
++        val s = stats.clamped()
++        val dao = db.userCharacterDao()
++        val c = dao.getCharacter(characterId)
++
++        val injury = when {
++            !s.injured -> NfcCharacter.InjuryStatus.None
++            c.injuryStatus != NfcCharacter.InjuryStatus.None -> c.injuryStatus
++            else -> NfcCharacter.InjuryStatus.Injury
++        }
++
++        dao.updateCharacter(
++            c.copy(
++                ageInDays = s.ageInDays,
++                mood = s.mood,
++                vitalPoints = s.vitalPoints,
++                transformationCountdown = s.transformationCountdown,
++                injuryStatus = injury,
++                trophies = s.trophies,
++                currentPhaseBattlesWon = s.currentPhaseBattlesWon,
++                currentPhaseBattlesLost = s.currentPhaseBattlesLost,
++                totalBattlesWon = s.totalBattlesWon,
++                totalBattlesLost = s.totalBattlesLost
++            )
++        )
++
++        if (c.characterType == DeviceType.BEDevice) {
++            val be = dao.getBeData(characterId).firstOrNull()
++            if (be != null) {
++                dao.updateBECharacterData(
++                    be.copy(
++                        trainingHp = s.trainingHp,
++                        trainingAp = s.trainingAp,
++                        trainingBp = s.trainingBp,
++                        remainingTrainingTimeInMinutes = s.remainingTrainingTimeInMinutes,
++                        abilityRarity = s.abilityRarity
++                    )
++                )
++            }
++        }
++    }
++}
+diff --git a/app/src/main/res/values-ja/strings.xml b/app/src/main/res/values-ja/strings.xml
+index 95bd892..bc30505 100644
+--- a/app/src/main/res/values-ja/strings.xml
++++ b/app/src/main/res/values-ja/strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">VBHelper</string>
++    <string name="app_name">VBHelper Custom</string>
+     <string name="beta_warning_button_dismiss">閉じる</string>
+     <string name="nav_scan">スキャン</string>
+     <string name="nav_battle">バトル</string>
+diff --git a/app/src/main/res/values-pt-rBR/strings.xml b/app/src/main/res/values-pt-rBR/strings.xml
+index 2caa2c4..a238360 100644
+--- a/app/src/main/res/values-pt-rBR/strings.xml
++++ b/app/src/main/res/values-pt-rBR/strings.xml
+@@ -1,5 +1,5 @@
+ <resources>
+-    <string name="app_name">VBHelper</string>
++    <string name="app_name">VBHelper Custom</string>
+     <string name="beta_warning_message_main">
+         Este aplicativo ainda está em versão alfa e não está completo. Não o use para armazenar personagens importantes para você, pois futuras atualizações podem apagar todos os seus personagens. Desculpe pelo transtorno!
+     </string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index e3a5d26..f77c372 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,5 @@
+ <resources>
+-    <string name="app_name">VBHelper</string>
++    <string name="app_name">VBHelper Custom</string>
+     <string name="beta_warning_message_main">
+         This application is currently in alpha and it is not complete. Do not use it to store important characters for you, as any future updates might delete all your characters. Sorry for the inconvenience!
+     </string>
+@@ -232,4 +232,43 @@
+     <string name="companion_logs_warning">Warning: Log transfer might take a while</string>
+     <string name="settings_companion_send_watch_logs_title">Send Watch Logs</string>
+     <string name="companion_transfer_disabled_message">Transfer is currently disabled</string>
++
++    <!-- Create / edit Digimon -->
++    <string name="nav_create_character">Create Digimon</string>
++    <string name="nav_edit_character">Edit Digimon</string>
++    <string name="forge_create_button">Create</string>
++    <string name="forge_create_title">Create a Digimon</string>
++    <string name="forge_edit_title">Edit stats</string>
++    <string name="forge_edit_button">Edit stats</string>
++    <string name="forge_no_cards">No cards imported yet. Import a card dump in Settings first, then come back here.</string>
++    <string name="forge_step_card">1. Pick a card</string>
++    <string name="forge_step_digimon">2. Pick a Digimon</string>
++    <string name="forge_step_bracelet">3. Which bracelet?</string>
++    <string name="forge_step_stats">4. Set stats</string>
++    <string name="forge_selected_summary">Slot %1$d · stage %2$d · %3$s</string>
++    <string name="forge_bracelet_be">Vital Bracelet BE</string>
++    <string name="forge_bracelet_vb">Original VB / Vital Hero</string>
++    <string name="forge_section_basics">Basics</string>
++    <string name="forge_section_battles">Battles</string>
++    <string name="forge_section_be">BE training</string>
++    <string name="forge_vitals">Vital points</string>
++    <string name="forge_trophies">Trophies</string>
++    <string name="forge_training_pp">Training PP</string>
++    <string name="forge_mood">Mood</string>
++    <string name="forge_age">Age (days)</string>
++    <string name="forge_evo_timer">Evolution timer (minutes)</string>
++    <string name="forge_injured">Injured</string>
++    <string name="forge_stage_wins">Wins this stage</string>
++    <string name="forge_stage_losses">Losses this stage</string>
++    <string name="forge_total_wins">Total wins</string>
++    <string name="forge_total_losses">Total losses</string>
++    <string name="forge_training_time">Training time left (minutes)</string>
++    <string name="forge_ability_rarity">Ability rarity</string>
++    <string name="forge_test_warning">Put the matching card in your bracelet before sending. Try this on a Digimon you don\'t mind losing first.</string>
++    <string name="forge_create_and_send">Create and send to bracelet</string>
++    <string name="forge_created_toast">Digimon created</string>
++    <string name="forge_loading">Loading…</string>
++    <string name="forge_edit_hint">Changes are saved in the app. They reach your bracelet the next time you use Send to watch.</string>
++    <string name="forge_save">Save</string>
++    <string name="forge_saved_toast">Stats saved</string>
+ </resources>
