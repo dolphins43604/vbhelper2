@@ -10,9 +10,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # Uses the most recently uploaded .patch file, whatever it is named
+      # (phones often save downloads as "custom-changes (1).patch").
       - name: Apply the custom changes
-        run: git apply custom-changes.patch
+        run: |
+          patch_file=$(git log -1 --diff-filter=AM --name-only --pretty=format: -- '*.patch' | grep -v '^$' | tail -1)
+          echo "Applying: $patch_file"
+          git apply "$patch_file"
 
       - uses: actions/setup-java@v4
         with:
