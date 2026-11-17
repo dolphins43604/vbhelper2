@@ -702,7 +702,7 @@ index 0000000..a743b67
 +    }
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
-index 86b474d..5b625af 100644
+index 86b474d..4342d14 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
 @@ -36,6 +36,13 @@ import com.github.nacabaro.vbhelper.screens.adventureScreen.AdventureScreenContr
@@ -719,7 +719,7 @@ index 86b474d..5b625af 100644
  import com.github.nacabaro.vbhelper.screens.spriteViewer.SpriteViewerControllerImpl
  import com.github.nacabaro.vbhelper.screens.storageScreen.StorageScreenControllerImpl
  import com.github.nacabaro.vbhelper.source.StorageRepository
-@@ -167,6 +174,61 @@ fun AppNavigation(
+@@ -167,6 +174,64 @@ fun AppNavigation(
                          .adventureScreenController
                  )
              }
@@ -764,6 +764,9 @@ index 86b474d..5b625af 100644
 +                    )
 +                }
 +            }
++            composable(NavigationItems.RogueTab.route) {
++                RogueScreen(navController = navController, characterId = -1L)
++            }
 +            composable(NavigationItems.Rogue.route) {
 +                val characterId = it.arguments?.getString("characterId")?.toLongOrNull()
 +                if (characterId != null) {
@@ -781,11 +784,36 @@ index 86b474d..5b625af 100644
              composable(NavigationItems.Credits.route) {
                  CreditsScreen(
                      navController = navController
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/BottomNavigationBar.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/BottomNavigationBar.kt
+index 16e6728..ba3ac74 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/BottomNavigationBar.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/BottomNavigationBar.kt
+@@ -17,6 +17,7 @@ fun BottomNavigationBar(navController: NavController) {
+         NavigationItems.Battles,
+         NavigationItems.Home,
+         NavigationItems.Dex,
++        NavigationItems.RogueTab,
+         NavigationItems.Storage,
+     )
+ 
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
-index 77b9b91..18ca458 100644
+index 77b9b91..9489108 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
-@@ -93,6 +93,48 @@ sealed class NavigationItems(
+@@ -39,6 +39,12 @@ sealed class NavigationItems(
+         R.string.nav_card_adventure
+     )
+ 
++    object RogueTab : NavigationItems(
++        "RogueHome",
++        R.drawable.baseline_fort_24,
++        R.string.nav_rogue
++    )
++
+     object Storage : NavigationItems(
+         "Storage",
+         R.drawable.baseline_catching_pokemon_24,
+@@ -93,6 +99,48 @@ sealed class NavigationItems(
          R.string.nav_adventure
      )
  
@@ -4057,10 +4085,10 @@ index 0000000..d63bcf3
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt
 new file mode 100644
-index 0000000..8c00cb1
+index 0000000..279d80f
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,834 @@
 +package com.github.nacabaro.vbhelper.screens.rogue
 +
 +import androidx.compose.foundation.Canvas
@@ -4097,6 +4125,7 @@ index 0000000..8c00cb1
 +import androidx.compose.material3.Text
 +import androidx.compose.runtime.Composable
 +import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.NonSkippableComposable
 +import androidx.compose.runtime.getValue
 +import androidx.compose.runtime.mutableIntStateOf
 +import androidx.compose.runtime.mutableStateListOf
@@ -4253,7 +4282,7 @@ index 0000000..8c00cb1
 +    val storage = remember { StorageRepository(application.container.db) }
 +    var everyone by remember { mutableStateOf<List<CharacterDtos.CharacterWithSprites>>(emptyList()) }
 +    var cards by remember { mutableStateOf<List<TacticsDtos.CardOption>>(emptyList()) }
-+    val party = remember { mutableStateListOf(leaderId) }
++    val party = remember { mutableStateListOf<Long>().apply { if (leaderId > 0) add(leaderId) } }
 +    var areas by remember { mutableStateOf<List<TacticsDtos.CardOption>>(emptyList()) }
 +    var bits by remember { mutableIntStateOf(0) }
 +
@@ -4304,6 +4333,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ hub
 +
 +@Composable
++@NonSkippableComposable
 +private fun RunHub(
 +    run: RunState,
 +    repo: RunRepository,
@@ -4344,6 +4374,7 @@ index 0000000..8c00cb1
 +}
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun PartyPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int) {
 +    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
@@ -4383,6 +4414,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ map
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun MapView(run: RunState, version: Int, onPick: (MapNode) -> Unit) {
 +    val nodes = run.map()
@@ -4441,6 +4473,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ start skills & level-ups
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun StartSkills(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
 +    val next = run.members.firstOrNull { it.skills.isEmpty() }
@@ -4474,6 +4507,7 @@ index 0000000..8c00cb1
 +}
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun LevelUp(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
 +    val key = run.picks.firstOrNull()
@@ -4522,6 +4556,7 @@ index 0000000..8c00cb1
 +
 +/** Learns [skill] on [m], asking which skill to replace when both slots are full. */
 +@Composable
++@NonSkippableComposable
 +private fun LearnSkill(m: Member, skill: String, onDone: () -> Unit, onCancel: () -> Unit) {
 +    if (m.skills.size < Growth.LEARNED_SLOTS) {
 +        LaunchedEffect(skill) { m.skills += skill; onDone() }
@@ -4541,6 +4576,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ fights
 +
 +@Composable
++@NonSkippableComposable
 +private fun FightIntro(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, onFight: (FightSetup) -> Unit) {
 +    val node = run.current() ?: return
 +    val type = run.nodeType ?: NodeType.BATTLE
@@ -4594,6 +4630,7 @@ index 0000000..8c00cb1
 +}
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun GearPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
 +    val g = run.gearDrop
@@ -4635,6 +4672,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ other stops
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun StopPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
 +    val type = run.nodeType ?: return
@@ -4833,6 +4871,7 @@ index 0000000..8c00cb1
 +// ------------------------------------------------------------------------------------------ end of run
 +
 +@Composable
++@NonSkippableComposable
 +@Suppress("UNUSED_PARAMETER")
 +private fun RunOver(run: RunState, version: Int, onFinished: () -> Unit) {
 +    Card(Modifier.fillMaxWidth()) {
@@ -5802,10 +5841,10 @@ index cc9d3d0..f84ae66 100644
                          NavigationItems.Scan.route.replace(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 new file mode 100644
-index 0000000..0df8d2a
+index 0000000..e61f153
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
-@@ -0,0 +1,887 @@
+@@ -0,0 +1,894 @@
 +package com.github.nacabaro.vbhelper.screens.tactics
 +
 +import androidx.compose.foundation.BorderStroke
@@ -5845,6 +5884,7 @@ index 0000000..0df8d2a
 +import androidx.compose.material3.Text
 +import androidx.compose.runtime.Composable
 +import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.NonSkippableComposable
 +import androidx.compose.runtime.getValue
 +import androidx.compose.runtime.mutableIntStateOf
 +import androidx.compose.runtime.mutableStateListOf
@@ -6343,6 +6383,7 @@ index 0000000..0df8d2a
 +}
 +
 +@Composable
++@NonSkippableComposable
 +private fun Board(
 +    battle: TacticsBattle,
 +    frames: Map<Long, Frames>,
@@ -6466,6 +6507,7 @@ index 0000000..0df8d2a
 +}
 +
 +@Composable
++@NonSkippableComposable
 +private fun UnitCell(
 +    f: Fighter,
 +    frames: Frames?,
@@ -6522,6 +6564,7 @@ index 0000000..0df8d2a
 +}
 +
 +@Composable
++@NonSkippableComposable
 +private fun IntentList(battle: TacticsBattle) {
 +    if (battle.intents.isEmpty() || battle.winner != null) return
 +    val letters = battle.fighters.filter { it.side == TacticsBattle.PLAYER }.mapIndexed { i, f -> f.id to "ABC"[i % 3] }.toMap()
@@ -6544,6 +6587,7 @@ index 0000000..0df8d2a
 +
 +@OptIn(ExperimentalLayoutApi::class)
 +@Composable
++@NonSkippableComposable
 +private fun ActionPanel(
 +    battle: TacticsBattle,
 +    step: Step,
@@ -6645,6 +6689,7 @@ index 0000000..0df8d2a
 +}
 +
 +@Composable
++@NonSkippableComposable
 +private fun UnitDetails(battle: TacticsBattle, f: Fighter, onClose: () -> Unit) {
 +    val intent = battle.intents.firstOrNull { it.enemyId == f.id }
 +    Card(Modifier.fillMaxWidth()) {
@@ -6673,6 +6718,7 @@ index 0000000..0df8d2a
 +}
 +
 +@Composable
++@NonSkippableComposable
 +private fun BuffLines(f: Fighter) {
 +    val buffs = f.buffText()
 +    if (buffs.isNotEmpty()) Text("▲ Buffs: " + buffs.joinToString(" · "), color = Color(0xFF81C784), style = MaterialTheme.typography.bodySmall)
@@ -8162,7 +8208,7 @@ index 2caa2c4..a238360 100644
          Este aplicativo ainda está em versão alfa e não está completo. Não o use para armazenar personagens importantes para você, pois futuras atualizações podem apagar todos os seus personagens. Desculpe pelo transtorno!
      </string>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index e3a5d26..ccb3666 100644
+index e3a5d26..e5e655f 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
 @@ -1,5 +1,5 @@
@@ -8172,7 +8218,7 @@ index e3a5d26..ccb3666 100644
      <string name="beta_warning_message_main">
          This application is currently in alpha and it is not complete. Do not use it to store important characters for you, as any future updates might delete all your characters. Sorry for the inconvenience!
      </string>
-@@ -232,4 +232,116 @@
+@@ -232,4 +232,117 @@
      <string name="companion_logs_warning">Warning: Log transfer might take a while</string>
      <string name="settings_companion_send_watch_logs_title">Send Watch Logs</string>
      <string name="companion_transfer_disabled_message">Transfer is currently disabled</string>
@@ -8288,4 +8334,5 @@ index e3a5d26..ccb3666 100644
 +    <string name="offline_back_to_hub">Back</string>
 +    <string name="tactics_title">Tactics battle (test)</string>
 +    <string name="rogue_title">Roguelike run</string>
++    <string name="nav_rogue">Rogue</string>
  </resources>
