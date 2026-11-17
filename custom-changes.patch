@@ -4040,10 +4040,10 @@ index cc9d3d0..bd87026 100644
                          NavigationItems.Scan.route.replace(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 new file mode 100644
-index 0000000..0c03bab
+index 0000000..85c7795
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
-@@ -0,0 +1,662 @@
+@@ -0,0 +1,783 @@
 +package com.github.nacabaro.vbhelper.screens.tactics
 +
 +import androidx.compose.foundation.BorderStroke
@@ -4238,7 +4238,9 @@ index 0000000..0c03bab
 +                    Text(Skills.fieldPassive(repo.field(f)), style = MaterialTheme.typography.bodySmall)
 +                    Text(Skills.attrTrait(repo.attr(f.attribute)), style = MaterialTheme.typography.bodySmall)
 +                    Text("Learned skills (${chosen.size}/2):", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 6.dp))
-+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
++                    Text("Every Digimon also has Attack (free, range 1) and Signature (3 Energy, range 2, no counter).",
++                        style = MaterialTheme.typography.bodySmall)
++                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
 +                        Skills.poolFor(repo.field(f)).forEach { s ->
 +                            val on = s.name in chosen
 +                            FilterChip(
@@ -4246,7 +4248,13 @@ index 0000000..0c03bab
 +                                onClick = {
 +                                    picks[id] = if (on) chosen - s.name else if (chosen.size < 2) chosen + s.name else chosen
 +                                },
-+                                label = { Text("${s.name} (${s.cost})", fontSize = 12.sp) }
++                                label = {
++                                    Column(Modifier.padding(vertical = 4.dp)) {
++                                        Text("${s.name} · ${skillCostText(s)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                        Text(s.description, fontSize = 12.sp)
++                                    }
++                                },
++                                modifier = Modifier.fillMaxWidth()
 +                            )
 +                        }
 +                    }
@@ -4311,6 +4319,18 @@ index 0000000..0c03bab
 +    data class Moved(val unit: Int, val dest: Pos) : Step
 +    data class Targeting(val unit: Int, val dest: Pos, val skill: Skill) : Step
 +    data class Confirm(val unit: Int, val dest: Pos, val skill: Skill, val target: Int, val forecast: Forecast) : Step
++    /** Looking at any Digimon's details; taps keep working as in [back]. */
++    data class Inspect(val unit: Int, val back: Step) : Step
++}
++
++private fun skillCostText(s: Skill): String {
++    val cost = if (s.cost == 0) "free" else "${s.cost} Energy"
++    val range = when (s.kind) {
++        SkillKind.SELF -> "self"
++        SkillKind.ATTACK -> "range ${s.range}"
++        else -> "within ${s.range}"
++    }
++    return "$cost · $range"
 +}
 +
 +@Composable
@@ -4418,14 +4438,25 @@ index 0000000..0c03bab
 +                onSkill = { s ->
 +                    val st = step
 +                    if (st is Step.Moved) {
-+                        if (s.kind == SkillKind.ATTACK) step = Step.Targeting(st.unit, st.dest, s)
-+                        else doAction(st.unit, st.dest, s, null)
++                        if (s.kind == SkillKind.ATTACK) {
++                            val f = battle.byId(st.unit)
++                            val targets = battle.targetsFrom(f, st.dest, s)
++                            step = if (targets.size == 1) Step.Confirm(f.id, st.dest, s, targets[0].id, battle.forecast(f, st.dest, s, targets[0]))
++                            else Step.Targeting(st.unit, st.dest, s)
++                        } else doAction(st.unit, st.dest, s, null)
 +                    }
 +                },
 +                onGuard = { (step as? Step.Moved)?.let { doAction(it.unit, it.dest, null, null, guard = true) } },
 +                onWait = { (step as? Step.Moved)?.let { doAction(it.unit, it.dest, null, null) } },
 +                onConfirm = { (step as? Step.Confirm)?.let { doAction(it.unit, it.dest, it.skill, it.target) } },
-+                onCancel = { step = Step.Idle }
++                onCancel = {
++                    step = when (val st = step) {
++                        is Step.Confirm -> Step.Moved(st.unit, st.dest)
++                        is Step.Targeting -> Step.Moved(st.unit, st.dest)
++                        is Step.Inspect -> st.back
++                        else -> Step.Idle
++                    }
++                }
 +            )
 +        }
 +
@@ -4435,26 +4466,48 @@ index 0000000..0c03bab
 +    }
 +}
 +
-+/** Board tap handling: select, move, pick a target. */
++/**
++ * Board tap handling, Fire Emblem style: tap your Digimon to select it, a blue tile to move,
++ * an enemy to attack it (it walks into range by itself), anything else to see its details.
++ */
 +private fun onTap(battle: TacticsBattle, step: Step, pos: Pos): Step {
 +    if (battle.enemyPhase) return step
 +    val here = battle.at(pos)
++    val mineReady = here != null && here.side == TacticsBattle.PLAYER && !here.acted
++    val enemy = here?.takeIf { it.side == TacticsBattle.ENEMY }
++
++    // Attack the tapped enemy with the basic attack, from the current tile if it reaches, else the nearest tile that does.
++    fun attack(f: Fighter, from: Pos?, target: Fighter, current: Step): Step {
++        val s = Skills.BASIC
++        val tile = if (from != null && from.dist(target.pos) <= f.skillRange(s)) from
++        else battle.reachable(f).filter { it.dist(target.pos) <= f.skillRange(s) }.minByOrNull { it.dist(from ?: f.pos) }
++        return if (tile == null) Step.Inspect(target.id, current)   // out of reach: show its details instead
++        else Step.Confirm(f.id, tile, s, target.id, battle.forecast(f, tile, s, target))
++    }
++
 +    return when (step) {
-+        is Step.Idle, is Step.Confirm -> {
-+            if (here != null && here.side == TacticsBattle.PLAYER && !here.acted) Step.Selected(here.id) else Step.Idle
++        is Step.Inspect -> onTap(battle, step.back, pos)
++        is Step.Idle -> when {
++            mineReady -> Step.Selected(here!!.id)
++            here != null -> Step.Inspect(here.id, Step.Idle)
++            else -> Step.Idle
 +        }
 +        is Step.Selected -> {
 +            val f = battle.byId(step.unit)
 +            when {
++                enemy != null -> attack(f, null, enemy, step)
 +                pos in battle.reachable(f) -> Step.Moved(f.id, pos)
-+                here != null && here.side == TacticsBattle.PLAYER && !here.acted -> Step.Selected(here.id)
++                mineReady -> Step.Selected(here!!.id)
++                here != null -> Step.Inspect(here.id, step)
 +                else -> Step.Idle
 +            }
 +        }
 +        is Step.Moved -> {
 +            val f = battle.byId(step.unit)
 +            when {
++                enemy != null -> attack(f, step.dest, enemy, step)
 +                pos in battle.reachable(f) -> Step.Moved(f.id, pos)
++                mineReady && here!!.id != f.id -> Step.Selected(here.id)
 +                else -> step
 +            }
 +        }
@@ -4463,6 +4516,18 @@ index 0000000..0c03bab
 +            val target = battle.targetsFrom(f, step.dest, step.skill).firstOrNull { it.pos == pos }
 +            if (target != null) Step.Confirm(f.id, step.dest, step.skill, target.id, battle.forecast(f, step.dest, step.skill, target))
 +            else Step.Moved(f.id, step.dest)
++        }
++        is Step.Confirm -> {
++            val f = battle.byId(step.unit)
++            when {
++                // tapping another enemy in range of the same skill switches the target
++                enemy != null && enemy.pos.dist(step.dest) <= f.skillRange(step.skill) ->
++                    Step.Confirm(f.id, step.dest, step.skill, enemy.id, battle.forecast(f, step.dest, step.skill, enemy))
++                enemy != null -> attack(f, step.dest, enemy, step)
++                pos in battle.reachable(f) -> Step.Moved(f.id, pos)
++                mineReady && here!!.id != f.id -> Step.Selected(here.id)
++                else -> Step.Moved(f.id, step.dest)
++            }
 +        }
 +    }
 +}
@@ -4492,8 +4557,17 @@ index 0000000..0c03bab
 +        is Step.Confirm -> step.dest
 +        else -> null
 +    }
-+    val attackTiles: Set<Pos> = if (step is Step.Targeting && selected != null)
-+        battle.targetsFrom(selected, step.dest, step.skill).map { it.pos }.toSet() else emptySet()
++    val attackTiles: Set<Pos> = when {
++        step is Step.Targeting && selected != null -> battle.targetsFrom(selected, step.dest, step.skill).map { it.pos }.toSet()
++        step is Step.Confirm -> setOf(battle.byId(step.target).pos)
++        // enemies the selected Digimon can reach with its basic attack this turn
++        (step is Step.Selected || step is Step.Moved) && selected != null -> {
++            val reach = battle.reachable(selected)
++            battle.side(TacticsBattle.ENEMY).filter { e -> reach.any { it.dist(e.pos) <= selected.skillRange(Skills.BASIC) } }
++                .map { it.pos }.toSet()
++        }
++        else -> emptySet()
++    }
 +    val intended: Set<Int> = battle.intents.mapNotNull { it.targetId }.toSet()
 +    val letters = battle.fighters.filter { it.side == TacticsBattle.PLAYER }.mapIndexed { i, f -> f.id to "ABC"[i % 3] }.toMap()
 +
@@ -4634,9 +4708,14 @@ index 0000000..0c03bab
 +        is Step.Confirm -> step.unit
 +        else -> null
 +    }
++    if (step is Step.Inspect) {
++        UnitDetails(battle, battle.byId(step.unit), onClose = onCancel)
++        return
++    }
 +    if (unitId == null) {
 +        Text(
-+            if (busy) "…" else "Tap one of your Digimon (A, B, C) to select it. Each moves, then takes one action. Red ! marks who an enemy will hit.",
++            if (busy) "…" else "Tap one of your Digimon (A, B, C) to select it. Tap a blue tile to move, or tap a red enemy to attack it. " +
++                    "Tap any Digimon to see its details and skills. A red ! marks who an enemy will hit.",
 +            style = MaterialTheme.typography.bodySmall
 +        )
 +        return
@@ -4648,19 +4727,32 @@ index 0000000..0c03bab
 +            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()}" +
 +                    (if (f.shield > 0) " · Shield ${f.shield.toInt()}" else ""), style = MaterialTheme.typography.bodySmall)
 +            when (step) {
-+                is Step.Selected -> Text("Tap a blue tile to move (or its own tile to stay).", style = MaterialTheme.typography.bodySmall)
++                is Step.Selected -> Text("Tap a blue tile to move (its own tile to stay), or tap a red enemy to attack it.", style = MaterialTheme.typography.bodySmall)
 +                is Step.Moved -> {
-+                    Text("Choose an action:", style = MaterialTheme.typography.bodySmall)
-+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                    Text("Choose an action (or tap a red enemy to attack it):", style = MaterialTheme.typography.bodySmall)
++                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
 +                        f.skills.forEach { s ->
-+                            val usable = battle.canUse(f, s) && (s.kind != SkillKind.ATTACK || battle.targetsFrom(f, step.dest, s).isNotEmpty())
-+                            OutlinedButton(onClick = { onSkill(s) }, enabled = usable) {
-+                                Text("${s.name} ${if (s.cost > 0) "(${s.cost})" else ""}", fontSize = 12.sp)
++                            val inRange = s.kind != SkillKind.ATTACK || battle.targetsFrom(f, step.dest, s).isNotEmpty()
++                            val usable = battle.canUse(f, s) && inRange
++                            val why = when {
++                                s.cost > f.energy -> "needs ${s.cost} Energy"
++                                !inRange -> "no enemy in range from here"
++                                !battle.canUse(f, s) -> "can't use now"
++                                else -> null
++                            }
++                            OutlinedButton(onClick = { onSkill(s) }, enabled = usable, modifier = Modifier.fillMaxWidth()) {
++                                Column(Modifier.fillMaxWidth()) {
++                                    Text("${s.name} · ${skillCostText(s)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                    Text(s.description, fontSize = 12.sp)
++                                    if (why != null) Text(why, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
++                                }
 +                            }
 +                        }
-+                        OutlinedButton(onClick = onGuard) { Text("Guard", fontSize = 12.sp) }
-+                        OutlinedButton(onClick = onWait) { Text("Wait", fontSize = 12.sp) }
-+                        OutlinedButton(onClick = onCancel) { Text("Cancel", fontSize = 12.sp) }
++                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
++                            OutlinedButton(onClick = onGuard) { Text("Guard (half damage)", fontSize = 12.sp) }
++                            OutlinedButton(onClick = onWait) { Text("Wait", fontSize = 12.sp) }
++                            OutlinedButton(onClick = onCancel) { Text("Cancel", fontSize = 12.sp) }
++                        }
 +                    }
 +                }
 +                is Step.Targeting -> {
@@ -4672,6 +4764,7 @@ index 0000000..0c03bab
 +                    val t = battle.byId(step.target)
 +                    val fc = step.forecast
 +                    Text("${step.skill.name} → ${t.name} (HP ${t.hp.toInt()})", fontWeight = FontWeight.SemiBold)
++                    Text(step.skill.description, style = MaterialTheme.typography.bodySmall)
 +                    Text(
 +                        "Damage ${fc.damage}${if (fc.doubles) " ×2 (faster)" else ""} · Hit ${fc.hit}% · Crit ${fc.crit}%" +
 +                                when (fc.advantage) { 1 -> " · ▲ advantage"; -1 -> " · ▼ they have advantage"; else -> "" } +
@@ -4685,11 +4778,39 @@ index 0000000..0c03bab
 +                    )
 +                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
 +                        Button(onClick = onConfirm) { Text("Confirm") }
-+                        OutlinedButton(onClick = onCancel) { Text("Cancel") }
++                        OutlinedButton(onClick = onCancel) { Text("Other actions") }
 +                    }
++                    Text("Tap another red enemy to switch target.", style = MaterialTheme.typography.bodySmall)
 +                }
 +                else -> {}
 +            }
++        }
++    }
++}
++
++@Composable
++private fun UnitDetails(battle: TacticsBattle, f: Fighter, onClose: () -> Unit) {
++    val intent = battle.intents.firstOrNull { it.enemyId == f.id }
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
++            Text("${if (f.side == TacticsBattle.ENEMY) "Enemy: " else ""}${f.name}", fontWeight = FontWeight.SemiBold)
++            Text("${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", style = MaterialTheme.typography.bodySmall)
++            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()} · " +
++                    "CRIT ${f.crit.toInt()}% · EVA ${f.eva.toInt()} · RES ${f.res.toInt()}" + (if (f.shield > 0) " · Shield ${f.shield.toInt()}" else ""),
++                style = MaterialTheme.typography.bodySmall)
++            if (f.status.isNotEmpty()) Text("Status: " + f.status.entries.joinToString { (k, v) -> "${k.label} ($v)" }, style = MaterialTheme.typography.bodySmall)
++            Text(Skills.fieldPassive(f.field), style = MaterialTheme.typography.bodySmall)
++            Text(Skills.attrTrait(f.attr), style = MaterialTheme.typography.bodySmall)
++            if (intent != null && f.alive) {
++                val target = intent.targetId?.let { battle.byId(it).name }
++                Text(if (target != null) "Next: ${intent.skill} on $target" else "Next: ${intent.skill}",
++                    color = Color(0xFFE53935), style = MaterialTheme.typography.bodySmall)
++            }
++            Text("Skills", style = MaterialTheme.typography.labelLarge)
++            f.skills.forEach { s ->
++                Text("${s.name} · ${skillCostText(s)}: ${s.description}", style = MaterialTheme.typography.bodySmall)
++            }
++            OutlinedButton(onClick = onClose) { Text("Close") }
 +        }
 +    }
 +}
