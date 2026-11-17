@@ -864,7 +864,7 @@ index 77b9b91..9489108 100644
          R.drawable.baseline_data_24,
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
 new file mode 100644
-index 0000000..06f94d2
+index 0000000..a7c96a7
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
 @@ -0,0 +1,312 @@
@@ -993,8 +993,8 @@ index 0000000..06f94d2
 +    /** Overall enemy strength in the run layer, set with the Kotlin run simulator. */
 +    const val RUN_THREAT = 1.08
 +    /** Per-area adjustment (area 1 is a warm-up) and per-party-stage adjustment (higher stages have stronger passives). */
-+    val RUN_AREA = doubleArrayOf(0.80, 0.97, 1.0)
-+    fun runStage(s: Stage) = when (s) { Stage.CHILD, Stage.BABY -> 0.92; Stage.ADULT -> 0.96; else -> 1.0 }
++    val RUN_AREA = doubleArrayOf(0.68, 0.86, 1.0)
++    fun runStage(s: Stage) = when (s) { Stage.CHILD, Stage.BABY -> 0.92; Stage.ADULT -> 0.96; Stage.PERFECT -> 1.02; Stage.ULTIMATE -> 1.10 }
 +}
 +
 +enum class SkillKind { ATTACK, SELF, ALLY, TEAM, FOES, REVIVE, AURA }
@@ -2089,10 +2089,10 @@ index 0000000..7c1b9d0
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt
 new file mode 100644
-index 0000000..34576aa
+index 0000000..ea1a55e
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,492 @@
 +package com.github.nacabaro.vbhelper.roguelike
 +
 +import kotlin.math.min
@@ -2380,8 +2380,8 @@ index 0000000..34576aa
 +    }
 +
 +    /**
-+     * Strength is set relative to your party, not the enemy's stage, so a baby in area 1 and an
-+     * Ultimate in area 3 are both fair fights for any party; difficulty climbs through the areas.
++     * Enemies keep their own stage's strength when they're below your party, so early baby forms are easy for
++     * strong parties; enemies above your party are scaled down to your level so every run stays winnable.
 +     */
 +    fun slots(area: Int, row: Int, type: NodeType, partyStage: Stage): List<EnemySlot> {
 +        val kind = when (type) { NodeType.ELITE -> 1; NodeType.BOSS -> 2; else -> 0 }
@@ -2393,7 +2393,8 @@ index 0000000..34576aa
 +            val minion = i >= 3
 +            val boss = type == NodeType.BOSS && i == 0
 +            val st = if (minion || (type == NodeType.BOSS && !boss)) maxOf(1, main - 1) else main
-+            var scale = threat * partyStage.tier / Stage.fromCard(st).tier
++            // Weaker forms stay weak (babies vs your Ultimates are easy); stronger forms are toned down to your level.
++            var scale = threat * minOf(1.0, partyStage.tier / Stage.fromCard(st).tier)
 +            var atk = 1.0
 +            if (minion) scale *= Tuning.MINION
 +            if (boss) { scale *= Tuning.BOSS_HP; atk = Tuning.BOSS_ATK / Tuning.BOSS_HP }
