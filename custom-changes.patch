@@ -263,10 +263,10 @@ index 0000000..d091a44
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt b/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt
 new file mode 100644
-index 0000000..9cf9e2e
+index 0000000..80d4319
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,176 @@
 +package com.github.nacabaro.vbhelper.daos
 +
 +import androidx.room.Dao
@@ -358,6 +358,80 @@ index 0000000..9cf9e2e
 +    """
 +    )
 +    suspend fun getCards(): List<TacticsDtos.CardOption>
++
++    /** Every Digimon on a card, baby forms included (the run's evolution ladder). */
++    @Query(
++        """
++        SELECT
++            cc.id AS unitKey,
++            c.cardId AS dimId,
++            cc.charaIndex AS charaIndex,
++            cc.stage AS stage,
++            cc.attribute AS attribute,
++            cc.baseHp AS hp,
++            cc.baseAp AS ap,
++            cc.baseBp AS dp,
++            0 AS vitals,
++            0 AS wins,
++            0 AS losses,
++            c.isBEm AS isBem,
++            s.spriteIdle1 AS idle1,
++            s.spriteIdle2 AS idle2,
++            s.spriteWalk1 AS walk1,
++            s.spriteWalk2 AS walk2,
++            s.spriteAttack AS attack,
++            s.spriteDodge AS dodge,
++            s.spriteHappy AS happy,
++            s.spriteSleep AS sleep,
++            s.width AS width,
++            s.height AS height
++        FROM CardCharacter cc
++        JOIN Card c ON c.id = cc.cardId
++        JOIN Sprite s ON s.id = cc.spriteId
++        WHERE cc.cardId = :cardId AND cc.stage >= 1
++    """
++    )
++    suspend fun getCardAll(cardId: Long): List<TacticsDtos.Fighter>
++
++    /** Evolutions between Digimon on one card. */
++    @Query(
++        """
++        SELECT pt.charaId AS fromId, pt.toCharaId AS toId
++        FROM PossibleTransformations pt
++        JOIN CardCharacter cc ON cc.id = pt.charaId
++        WHERE cc.cardId = :cardId AND pt.toCharaId IS NOT NULL
++    """
++    )
++    suspend fun getEvolutions(cardId: Long): List<TacticsDtos.Evo>
++
++    // ---- run rewards that go home to the real Digimon
++
++    @Query(
++        """
++        UPDATE UserCharacter SET
++            currentPhaseBattlesWon = MIN(currentPhaseBattlesWon + 1, 999),
++            totalBattlesWon = MIN(totalBattlesWon + 1, 999)
++        WHERE id = :userCharacterId
++    """
++    )
++    suspend fun addWin(userCharacterId: Long)
++
++    @Query("UPDATE UserCharacter SET trophies = MIN(trophies + 1, 999) WHERE id = :userCharacterId")
++    suspend fun addTrophy(userCharacterId: Long)
++
++    /** Cuts the evolution timer, never below 1 minute on a VB (0 on a BE), and never raises it. */
++    @Query(
++        """
++        UPDATE UserCharacter SET transformationCountdown =
++            CASE
++                WHEN transformationCountdown - :minutes < (CASE WHEN characterType = 'BEDevice' THEN 0 ELSE 1 END)
++                THEN MIN(transformationCountdown, CASE WHEN characterType = 'BEDevice' THEN 0 ELSE 1 END)
++                ELSE transformationCountdown - :minutes
++            END
++        WHERE id = :userCharacterId
++    """
++    )
++    suspend fun cutTimer(userCharacterId: Long, minutes: Int)
 +
 +    /** The card's own background art (saved on import), drawn behind the tactics board. */
 +    @Query("SELECT * FROM Background WHERE cardId = :cardId ORDER BY id LIMIT 1")
@@ -553,10 +627,10 @@ index 0000000..6a7d1b8
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/dtos/TacticsDtos.kt b/app/src/main/java/com/github/nacabaro/vbhelper/dtos/TacticsDtos.kt
 new file mode 100644
-index 0000000..782bd0e
+index 0000000..33f6de5
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/dtos/TacticsDtos.kt
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,42 @@
 +package com.github.nacabaro.vbhelper.dtos
 +
 +import com.github.cfogrady.vbnfc.data.NfcCharacter
@@ -589,6 +663,8 @@ index 0000000..782bd0e
 +        override fun equals(other: Any?) = other is Fighter && other.unitKey == unitKey && other.dimId == dimId
 +        override fun hashCode() = 31 * unitKey.hashCode() + dimId
 +    }
++
++    data class Evo(val fromId: Long, val toId: Long)
 +
 +    data class CardOption(
 +        val id: Long,
@@ -626,10 +702,10 @@ index 0000000..a743b67
 +    }
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
-index 86b474d..03cbdb9 100644
+index 86b474d..5b625af 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/AppNavigation.kt
-@@ -36,6 +36,12 @@ import com.github.nacabaro.vbhelper.screens.adventureScreen.AdventureScreenContr
+@@ -36,6 +36,13 @@ import com.github.nacabaro.vbhelper.screens.adventureScreen.AdventureScreenContr
  import com.github.nacabaro.vbhelper.screens.cardScreen.CardAdventureScreen
  import com.github.nacabaro.vbhelper.screens.cardScreen.CardScreenControllerImpl
  import com.github.nacabaro.vbhelper.screens.settingsScreen.CreditsScreen
@@ -639,10 +715,11 @@ index 86b474d..03cbdb9 100644
 +import com.github.nacabaro.vbhelper.screens.forgeScreen.JogressScreen
 +import com.github.nacabaro.vbhelper.screens.offlineBattle.OfflineBattleScreen
 +import com.github.nacabaro.vbhelper.screens.tactics.TacticsScreen
++import com.github.nacabaro.vbhelper.screens.rogue.RogueScreen
  import com.github.nacabaro.vbhelper.screens.spriteViewer.SpriteViewerControllerImpl
  import com.github.nacabaro.vbhelper.screens.storageScreen.StorageScreenControllerImpl
  import com.github.nacabaro.vbhelper.source.StorageRepository
-@@ -167,6 +173,52 @@ fun AppNavigation(
+@@ -167,6 +174,61 @@ fun AppNavigation(
                          .adventureScreenController
                  )
              }
@@ -687,6 +764,15 @@ index 86b474d..03cbdb9 100644
 +                    )
 +                }
 +            }
++            composable(NavigationItems.Rogue.route) {
++                val characterId = it.arguments?.getString("characterId")?.toLongOrNull()
++                if (characterId != null) {
++                    RogueScreen(
++                        navController = navController,
++                        characterId = characterId
++                    )
++                }
++            }
 +            composable(NavigationItems.DebugLog.route) {
 +                DebugLogScreen(
 +                    navController = navController
@@ -696,10 +782,10 @@ index 86b474d..03cbdb9 100644
                  CreditsScreen(
                      navController = navController
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
-index 77b9b91..d0cb0ae 100644
+index 77b9b91..18ca458 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/navigation/NavigationItems.kt
-@@ -93,6 +93,42 @@ sealed class NavigationItems(
+@@ -93,6 +93,48 @@ sealed class NavigationItems(
          R.string.nav_adventure
      )
  
@@ -733,6 +819,12 @@ index 77b9b91..d0cb0ae 100644
 +        R.string.tactics_title
 +    )
 +
++    object Rogue : NavigationItems(
++        "Rogue/{characterId}",
++        R.drawable.baseline_swords_24,
++        R.string.rogue_title
++    )
++
 +    object DebugLog : NavigationItems(
 +        "DebugLog",
 +        R.drawable.baseline_settings_24,
@@ -744,10 +836,10 @@ index 77b9b91..d0cb0ae 100644
          R.drawable.baseline_data_24,
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
 new file mode 100644
-index 0000000..d2ee7b6
+index 0000000..06f94d2
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,312 @@
 +package com.github.nacabaro.vbhelper.roguelike
 +
 +/**
@@ -786,12 +878,15 @@ index 0000000..d2ee7b6
 +    CHILD("Child", 1.0, 4, 1.0, 3.0, 2.0, 10.0),
 +    ADULT("Adult", 1.25, 3, 1.25, 5.0, 3.0, 20.0),
 +    PERFECT("Perfect", 1.55, 3, 1.5, 10.0, 4.0, 35.0),
-+    ULTIMATE("Ultimate", 1.9, 2, 1.75, 14.0, 7.0, 50.0);
++    ULTIMATE("Ultimate", 1.9, 2, 1.75, 14.0, 7.0, 50.0),
++    /** Baby forms (card stage 0–1). Last so the ordinals of the battle stages stay 0–3. */
++    BABY("In-Training", 0.8, 4, 1.0, 2.0, 1.0, 6.0);
 +
 +    companion object {
-+        /** Card stage index: 2 Child, 3 Adult, 4 Perfect, 5+ Ultimate. */
++        /** Card stage index: 0–1 baby, 2 Child, 3 Adult, 4 Perfect, 5+ Ultimate. */
 +        fun fromCard(stage: Int): Stage = when {
-+            stage <= 2 -> CHILD
++            stage <= 1 -> BABY
++            stage == 2 -> CHILD
 +            stage == 3 -> ADULT
 +            stage == 4 -> PERFECT
 +            else -> ULTIMATE
@@ -867,6 +962,11 @@ index 0000000..d2ee7b6
 +    const val MINION = 0.6
 +    const val BOSS_HP = 1.8
 +    const val BOSS_ATK = 1.25
++    /** Overall enemy strength in the run layer, set with the Kotlin run simulator. */
++    const val RUN_THREAT = 1.08
++    /** Per-area adjustment (area 1 is a warm-up) and per-party-stage adjustment (higher stages have stronger passives). */
++    val RUN_AREA = doubleArrayOf(0.80, 0.97, 1.0)
++    fun runStage(s: Stage) = when (s) { Stage.CHILD, Stage.BABY -> 0.92; Stage.ADULT -> 0.96; else -> 1.0 }
 +}
 +
 +enum class SkillKind { ATTACK, SELF, ALLY, TEAM, FOES, REVIVE, AURA }
@@ -1054,10 +1154,10 @@ index 0000000..d2ee7b6
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt
 new file mode 100644
-index 0000000..d08b129
+index 0000000..7c1b9d0
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,901 @@
 +package com.github.nacabaro.vbhelper.roguelike
 +
 +import kotlin.math.abs
@@ -1082,10 +1182,41 @@ index 0000000..d08b129
 +    val vitals: Int = 0,
 +    val skills: List<Skill> = emptyList(),
 +    val hpScale: Double = 1.0,
-+    val atkScale: Double = 1.0
++    val atkScale: Double = 1.0,
++    /** Run layer: HP carried between fights (fraction), skill upgrade levels, chips/gear/upgrades, Crest. */
++    val startHp: Double = 1.0,
++    val skillLevels: Map<String, Int> = emptyMap(),
++    val mods: Mods = Mods(),
++    val crest: Crest? = null
 +)
 +
++/** Run-long bonuses from data chips, Plug-ins, Bits upgrades and level-up stat boosts. */
++data class Mods(
++    val hpMul: Double = 1.0, val atkMul: Double = 1.0, val defMul: Double = 1.0,
++    val spd: Double = 0.0, val crit: Double = 0.0, val eva: Double = 0.0, val res: Double = 0.0, val hit: Double = 0.0,
++    val energy: Int = 0, val energyMax: Int = 0,
++    val shieldStart: Double = 0.0, val shieldMul: Double = 1.0,
++    val lifesteal: Double = 0.0, val vsVirus: Double = 0.0,
++    val extraPoison: Int = 0, val basicBurn: Double = 0.0
++)
++
++/** Crests: one rule-changing gear effect each. */
++enum class Crest(val label: String, val description: String) {
++    COURAGE("Crest of Courage", "Below half HP: +25 CRIT"),
++    FRIENDSHIP("Crest of Friendship", "Every hit heals an adjacent ally for 10% of the damage"),
++    LOVE("Crest of Love", "When an ally is deleted: +30% ATK for the rest of the battle"),
++    KNOWLEDGE("Crest of Knowledge", "+10 hit and +10 RES"),
++    SINCERITY("Crest of Sincerity", "While guarding, reflects 50% of the damage taken"),
++    RELIABILITY("Crest of Reliability", "Ignores the first negative status each battle"),
++    HOPE("Crest of Hope", "Once per battle, survives a deletion at 1 HP"),
++    LIGHT("Crest of Light", "Heals all allies 5% at the start of each turn"),
++    KINDNESS("Crest of Kindness", "Enemies that hit it get Throttled"),
++    MIRACLES("Crest of Miracles", "10% chance a basic Attack becomes a free Special Move"),
++    DESTINY("Crest of Destiny", "Special Move costs 2 Energy instead of 3")
++}
++
 +class Buff(
++    val source: String = "",
 +    val dmg: Double = 0.0, val def: Double = 0.0, val eva: Double = 0.0, val move: Int = 0,
 +    val spd: Double = 0.0, val crit: Double = 0.0, val res: Double = 0.0, val thorns: Double = 0.0,
 +    var turns: Int
@@ -1103,19 +1234,26 @@ index 0000000..d08b129
 +        return (1 + (r - 1) * Tuning.SPREAD).coerceIn(0.5, 2.0)
 +    }
 +
++    private val mods get() = spec.mods
++    val crest get() = spec.crest
 +    val maxHp: Double = Tuning.HP_BASE * rel(spec.hp, stage.medHp) * stage.tier * spec.hpScale *
-+            (1 + if (spec.field == Field.NSP) Tuning.NSP_HP else 0.0)
-+    val baseAtk: Double = Tuning.ATK_BASE * rel(spec.ap, stage.medAp) * stage.tier * spec.atkScale
-+    val baseDef: Double = Tuning.DEF_BASE * rel(spec.dp, stage.medDp)
-+    val acc: Double = Tuning.DEF_BASE * rel(spec.dp, stage.medDp)
-+    val baseSpd: Double = 10.0 + min(10, spec.battles / 10)
-+    val baseCrit: Double = 5.0 + Math.round(10 * spec.winRatio)
-+    val baseEva: Double = 5.0
-+    val baseRes: Double = 10.0 + min(15, spec.vitals / 1000)
-+    private val energyBonus = if (spec.vitals >= 10000) 1 else 0
++            (1 + if (spec.field == Field.NSP) Tuning.NSP_HP else 0.0) * spec.mods.hpMul
++    val baseAtk: Double = Tuning.ATK_BASE * rel(spec.ap, stage.medAp) * stage.tier * spec.atkScale * spec.mods.atkMul
++    val baseDef: Double = Tuning.DEF_BASE * rel(spec.dp, stage.medDp) * spec.mods.defMul
++    val acc: Double = Tuning.DEF_BASE * rel(spec.dp, stage.medDp) + spec.mods.hit / Tuning.HIT_PER_ACC +
++            if (spec.crest == Crest.KNOWLEDGE) 10 / Tuning.HIT_PER_ACC else 0.0
++    val baseSpd: Double = 10.0 + min(10, spec.battles / 10) + spec.mods.spd
++    val baseCrit: Double = 5.0 + Math.round(10 * spec.winRatio) + spec.mods.crit
++    val baseEva: Double = 5.0 + spec.mods.eva
++    val baseRes: Double = 10.0 + min(15, spec.vitals / 1000) + spec.mods.res + if (spec.crest == Crest.KNOWLEDGE) 10.0 else 0.0
++    private val energyBonus = (if (spec.vitals >= 10000) 1 else 0) + spec.mods.energy
++    val energyMax: Int = Tuning.ENERGY_MAX + spec.mods.energyMax
 +
-+    var hp: Double = maxHp
-+    var energy: Int = Tuning.ENERGY_START + energyBonus
++    var hp: Double = maxHp * spec.startHp.coerceIn(0.01, 1.0)
++    var energy: Int = min(Tuning.ENERGY_START + energyBonus, Tuning.ENERGY_MAX + spec.mods.energyMax)
++    var loveActive = false
++    var hopeUsed = false
++    var reliabilityUsed = false
 +    val status = mutableMapOf<Status, Int>()   // turns left, or stacks for Poison
 +    var shield = 0.0
 +    var shieldTurns = 0
@@ -1133,16 +1271,23 @@ index 0000000..d08b129
 +    var auraTurns = 0
 +
 +    val alive get() = hp > 0
-+    fun buffSum(sel: (Buff) -> Double) = buffs.sumOf(sel)
-+    val atk get() = baseAtk
++    /**
++     * Buffs don't stack: for each stat only the strongest bonus and the worst penalty count.
++     * (Casting the same skill again just refreshes it.)
++     */
++    fun buffSum(sel: (Buff) -> Double): Double {
++        val v = buffs.map(sel)
++        return (v.filter { it > 0 }.maxOrNull() ?: 0.0) + (v.filter { it < 0 }.minOrNull() ?: 0.0)
++    }
++    val atk get() = baseAtk * if (loveActive) 1.3 else 1.0
 +    val def get() = baseDef * (1 + buffSum { it.def })
 +    val spd get() = baseSpd + buffSum { it.spd } - if (Status.SLOW in status) Tuning.SLOW_SPD.toDouble() else 0.0
 +    val eva get() = baseEva + buffSum { it.eva } + if (spec.field == Field.WG) Tuning.WG_EVA * stage.passive else 0.0
-+    val crit get() = baseCrit + buffSum { it.crit }
++    val crit get() = baseCrit + buffSum { it.crit } + if (crest == Crest.COURAGE && hp < maxHp / 2) 25.0 else 0.0
 +    val res get() = baseRes + buffSum { it.res }
 +    val move: Int
 +        get() {
-+            val m = stage.move + (if (spec.field == Field.WG) 1 else 0) + buffs.sumOf { it.move }
++            val m = stage.move + (if (spec.field == Field.WG) 1 else 0) + buffSum { it.move.toDouble() }.toInt()
 +            return max(1, m - if (Status.SLOW in status) Tuning.SLOW_MOVE else 0)
 +        }
 +
@@ -1163,7 +1308,7 @@ index 0000000..d08b129
 +    fun skillRange(s: Skill): Int = s.range + if (field == Field.WG && s.range >= 2) 1 else 0
 +
 +    fun addShield(v: Double) {
-+        shield = max(shield, v); shieldTurns = Tuning.SHIELD_T
++        shield = max(shield, v * mods.shieldMul); shieldTurns = Tuning.SHIELD_T
 +    }
 +
 +    fun heal(v: Double): Double {
@@ -1196,7 +1341,12 @@ index 0000000..d08b129
 +/**
 + * One tactics battle on a 6×6 grid: your side moves first each round, then every enemy follows its shown intent.
 + */
-+class TacticsBattle(team: List<FighterSpec>, foes: List<FighterSpec>, seed: Long = System.nanoTime()) {
++class TacticsBattle(
++    team: List<FighterSpec>,
++    foes: List<FighterSpec>,
++    seed: Long = System.nanoTime(),
++    assistSpecs: List<FighterSpec> = emptyList()
++) {
 +    companion object {
 +        const val W = 6
 +        const val H = 6
@@ -1223,9 +1373,27 @@ index 0000000..d08b129
 +        for (f in fighters) {
 +            if (f.field == Field.ME) f.addShield(Tuning.ME_SHIELD * f.stage.passive * f.maxHp)
 +            if (f.attr == Attr.VACCINE) f.addShield(Tuning.FIREWALL * f.maxHp)
++            if (f.spec.mods.shieldStart > 0) f.addShield(f.spec.mods.shieldStart * f.maxHp)
 +        }
 +        startPhase(PLAYER)
 +    }
++
++    /** Befriended Digimon: each can jump in for one attack per battle from off the board. */
++    val assists: List<Fighter> = assistSpecs.mapIndexed { i, s -> Fighter(100 + i, PLAYER, s, Pos(-9, -9)) }
++    val assistUsed = mutableSetOf<Int>()
++
++    fun useAssist(index: Int, target: Fighter): List<BattleEvent> {
++        val events = mutableListOf<BattleEvent>()
++        val a = assists.getOrNull(index) ?: return events
++        if (index in assistUsed || winner != null || enemyPhase || !target.alive || target.side != ENEMY) return events
++        assistUsed += index
++        say("${a.name} jumps in to help!")
++        strike(a, target, Skills.SIGNATURE, events, counterOk = false, powerScale = 1.0 / Skills.SIGNATURE.power)
++        checkWinner()
++        return events
++    }
++
++    fun costOf(f: Fighter, s: Skill): Int = if (s === Skills.SIGNATURE && f.crest == Crest.DESTINY) 2 else s.cost
 +
 +    fun side(s: Int) = fighters.filter { it.side == s && it.alive }
 +    fun at(p: Pos) = fighters.firstOrNull { it.alive && it.pos == p }
@@ -1254,7 +1422,7 @@ index 0000000..d08b129
 +    }
 +
 +    fun canUse(f: Fighter, s: Skill): Boolean =
-+        s.cost <= f.energy && !(s.heal > 0 && s.kind == SkillKind.SELF && f.hp / f.maxHp > s.healBelow) &&
++        costOf(f, s) <= f.energy && !(s.heal > 0 && s.kind == SkillKind.SELF && f.hp / f.maxHp > s.healBelow) &&
 +                !(s.kind == SkillKind.REVIVE && fighters.none { it.side == f.side && !it.alive && !it.revived })
 +
 +    /** Enemies the skill can reach when used from [from]. */
@@ -1359,13 +1527,15 @@ index 0000000..d08b129
 +        if (s.vsSlow > 0 && Status.SLOW in d.status) m *= 1 + s.vsSlow
 +        if (s.vsCurse > 0 && Status.CURSE in d.status) m *= 1 + s.vsCurse
 +        if (s.vsVirus > 0 && d.attr == Attr.VIRUS) m *= 1 + s.vsVirus
++        if (a.spec.mods.vsVirus > 0 && d.attr == Attr.VIRUS) m *= 1 + a.spec.mods.vsVirus
 +        if (s.allyAdj > 0) m *= 1 + s.allyAdj * side(a.side).count { it !== a && it.pos.dist(d.pos) == 1 }
 +        if (s.missingHp > 0) m *= 1 + s.missingHp * (1 - a.hp / a.maxHp)
 +        if (s.execute > 0 && d.hp / d.maxHp < s.execute) m *= 2
 +        return m
 +    }
 +
-+    private fun level(a: Fighter, s: Skill): Double = 1.0   // skill upgrades arrive with the run layer
++    /** Skill upgrades from the run: +25% per level above 1 (up to level 3). */
++    fun level(a: Fighter, s: Skill): Double = 1 + Tuning.UPGRADE * ((a.spec.skillLevels[s.name] ?: 1) - 1)
 +
 +    private fun rawDamage(a: Fighter, d: Fighter, s: Skill, power: Double, adapt: Boolean): Double {
 +        val de = d.def * (1 - if (a.attr == Attr.VIRUS) Tuning.CORRUPT else 0.0) * (1 - s.pierce)
@@ -1417,7 +1587,11 @@ index 0000000..d08b129
 +        if (d.shield > 0) {
 +            val ab = min(d.shield, dmg); d.shield -= ab; dmg -= ab
 +        }
++        if (d.hp - dmg <= 0 && d.crest == Crest.HOPE && !d.hopeUsed && d.hp > 1) {
++            d.hopeUsed = true; dmg = d.hp - 1; say("${d.name} hangs on through Hope!")
++        }
 +        d.hp = max(0.0, d.hp - dmg)
++        if (!d.alive) side(d.side).filter { it.crest == Crest.LOVE }.forEach { it.loveActive = true }
 +        return dmg
 +    }
 +
@@ -1425,8 +1599,11 @@ index 0000000..d08b129
 +        if (!d.alive) return
 +        if (d.side != a.side && rng.nextDouble() < d.res / 100) return
 +        if (rng.nextDouble() > chance) return
++        if (st.negative && d.side != a.side && d.crest == Crest.RELIABILITY && !d.reliabilityUsed) {
++            d.reliabilityUsed = true; return
++        }
 +        when (st) {
-+            Status.POISON -> d.status[st] = min(Tuning.POISON_MAX, (d.status[st] ?: 0) + stacks)
++            Status.POISON -> d.status[st] = min(Tuning.POISON_MAX, (d.status[st] ?: 0) + stacks + a.spec.mods.extraPoison)
 +            Status.STUN -> if (d.stunImmune == 0) d.status[st] = 1
 +            Status.BURN -> d.status[st] = Tuning.BURN_T
 +            Status.SLOW -> d.status[st] = Tuning.SLOW_T
@@ -1460,11 +1637,15 @@ index 0000000..d08b129
 +            if (a.analyzeTarget == d.id) a.analyzeStacks = min(3, a.analyzeStacks + 1) else {
 +                a.analyzeTarget = d.id; a.analyzeStacks = 1
 +            }
-+            val drain = s.lifesteal + if (a.field == Field.NSO) Tuning.NSO_DRAIN * a.stage.passive else 0.0
++            val drain = s.lifesteal + a.spec.mods.lifesteal + if (a.field == Field.NSO) Tuning.NSO_DRAIN * a.stage.passive else 0.0
 +            if (drain > 0) a.heal(drain * dealt)
 +            d.buffs.filter { it.thorns > 0 }.forEach {
 +                applyDamage(d, a, it.thorns * dealt); tryStatus(d, a, Status.POISON)
 +            }
++            if (a.crest == Crest.FRIENDSHIP) side(a.side).filter { it !== a && it.pos.dist(a.pos) == 1 }
++                .minByOrNull { it.hp / it.maxHp }?.heal(0.10 * dealt)
++            if (d.guarding && d.crest == Crest.SINCERITY && a.alive) applyDamage(d, a, 0.5 * dealt)
++            if (d.crest == Crest.KINDNESS && d.alive) tryStatus(d, a, Status.WEAKEN)
 +            events += BattleEvent.Hit(a.id, d.id, s.name, Math.round(dealt).toInt(), crit, !d.alive)
 +            say("${a.name} ${s.name} → ${d.name}: ${Math.round(dealt)}${if (crit) " CRIT" else ""}${if (!d.alive) ", deleted" else ""}")
 +        }
@@ -1476,6 +1657,7 @@ index 0000000..d08b129
 +        if (s.poison > 0) tryStatus(a, d, Status.POISON, 1.0, s.poison)
 +        if (s.poisonChance > 0) tryStatus(a, d, Status.POISON, s.poisonChance)
 +        if (s === Skills.BASIC) {
++            if (a.spec.mods.basicBurn > 0) tryStatus(a, d, Status.BURN, a.spec.mods.basicBurn)
 +            if (a.field == Field.NSO) tryStatus(a, d, Status.CURSE, Tuning.NSO_CURSE)
 +            if (a.field == Field.JT) tryStatus(a, d, Status.POISON, 1.0,
 +                Tuning.JT_POISON + if (a.stage == Stage.PERFECT || a.stage == Stage.ULTIMATE) 1 else 0)
@@ -1511,9 +1693,13 @@ index 0000000..d08b129
 +        if (guard) {
 +            f.guarding = true; say("${f.name} guards")
 +        } else if (s != null && canUse(f, s)) {
-+            f.energy -= s.cost
-+            if (s.kind == SkillKind.ATTACK && target != null) attack(f, s, target, events)
-+            else support(f, s, events)
++            f.energy -= costOf(f, s)
++            var used = s
++            if (s === Skills.BASIC && f.crest == Crest.MIRACLES && rng.nextDouble() < 0.10) {
++                used = Skills.SIGNATURE; say("Miracle! ${f.name}'s Attack becomes a Special Move")
++            }
++            if (used.kind == SkillKind.ATTACK && target != null) attack(f, used, target, events)
++            else support(f, used, events)
 +        }
 +        f.acted = true
 +        checkWinner()
@@ -1576,20 +1762,22 @@ index 0000000..d08b129
 +            }
 +            SkillKind.ATTACK -> emptyList()
 +        }
++        val lv = level(f, s)
 +        for (t in targets) {
-+            if (s.heal > 0) t.heal(s.heal * t.maxHp)
-+            if (s.shield > 0) t.addShield(s.shield * t.maxHp)
++            if (s.heal > 0) t.heal(s.heal * lv * t.maxHp)
++            if (s.shield > 0) t.addShield(s.shield * lv * t.maxHp)
 +            if (s.regen) t.status[Status.REGEN] = Tuning.REGEN_T
 +            if (s.cleanse) Status.entries.filter { it.negative }.forEach { t.status.remove(it) }
 +            if (s.buffDmg != 0.0 || s.selfDef != 0.0 || s.buffEva != 0.0 || s.buffMove != 0 || s.buffSpd != 0.0 ||
 +                s.buffCrit != 0.0 || s.buffRes != 0.0 || s.thorns != 0.0
 +            ) {
-+                t.buffs += Buff(s.buffDmg, s.selfDef, s.buffEva, s.buffMove, s.buffSpd, s.buffCrit, s.buffRes, s.thorns,
++                t.buffs.removeAll { it.source == s.name }
++                t.buffs += Buff(s.name, s.buffDmg, s.selfDef, s.buffEva, s.buffMove, s.buffSpd, s.buffCrit, s.buffRes, s.thorns,
 +                    turns = s.buffTurns + if (t === f) 1 else 0)
 +            }
 +        }
 +        if (s.overclock > 0) f.overclock = min(5, f.overclock + s.overclock)
-+        if (s.energy > 0) f.energy = min(Tuning.ENERGY_MAX + 1, f.energy + s.energy)
++        if (s.energy > 0) f.energy = min(f.energyMax + 1, f.energy + s.energy)
 +        if (s.sureHit) f.sureHit = true
 +        events += BattleEvent.Support(f.id, s.name)
 +        say("${f.name} uses ${s.name}")
@@ -1606,11 +1794,12 @@ index 0000000..d08b129
 +        for (f in side(s)) {
 +            f.guarding = false
 +            f.acted = false
-+            if (f.energy <= Tuning.ENERGY_MAX) f.energy = min(Tuning.ENERGY_MAX, f.energy + 1)
++            if (f.energy <= f.energyMax) f.energy = min(f.energyMax, f.energy + 1)
 +            val pm = f.stage.passive
 +            if (f.field == Field.ME) f.overclock = min(5, f.overclock + 1)
 +            if (f.field == Field.DS) f.heal(Tuning.DS_REGEN * pm * f.maxHp)
 +            if (Status.REGEN in f.status) f.heal(Tuning.REGEN * f.maxHp)
++            if (side(s).any { it.crest == Crest.LIGHT }) f.heal(0.05 * f.maxHp)
 +            auraValue(f, s, AuraKind.MEND).takeIf { it > 0 }?.let { f.heal(it * f.maxHp) }
 +            auraSource(f, 1 - s, AuraKind.FLAME)?.let { h ->
 +                f.hp = max(0.0, f.hp - h.aura!!.auraValue * f.maxHp); say("${f.name} is scorched by ${h.name}'s ${h.aura!!.name}")
@@ -1735,7 +1924,7 @@ index 0000000..d08b129
 +        if (s.power <= 0) return 0.0
 +        val hc = if (a.sureHit || s.sureHit) 1.0 else hitChance(a, d)
 +        val th = if (hc < 1) hc * hc * (3 - 2 * hc) else 1.0
-+        return rawDamage(a, d, s, s.power, false) * th * (1 + a.crit / 100 * (Tuning.CRIT_DMG - 1))
++        return rawDamage(a, d, s, s.power * level(a, s), false) * th * (1 + a.crit / 100 * (Tuning.CRIT_DMG - 1))
 +    }
 +
 +    private fun scoreAttack(u: Fighter, s: Skill, t: Fighter, from: Pos = u.pos): Double {
@@ -1869,6 +2058,503 @@ index 0000000..d08b129
 +        }
 +        return choice
 +    }
++}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt
+new file mode 100644
+index 0000000..34576aa
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueRun.kt
+@@ -0,0 +1,491 @@
++package com.github.nacabaro.vbhelper.roguelike
++
++import kotlin.math.min
++import kotlin.math.roundToInt
++import kotlin.random.Random
++
++/**
++ * The run layer (Phase 4): 3 areas of branching stops, XP and level-ups, data chips, gear, befriending,
++ * Bits and the enemy evolution ladder. Pure Kotlin so it can be tested off-device; saving and the
++ * database live in RunRepository.
++ */
++
++// ------------------------------------------------------------------------------------------ map
++
++enum class NodeType(val label: String, val icon: String, val blurb: String) {
++    BATTLE("Battle", "⚔", "A standard fight. Small chance of gear."),
++    ELITE("Elite", "💀", "A harder fight: more XP, coins and a better gear chance."),
++    BOSS("Boss", "👑", "The area's boss. Guaranteed gear."),
++    REST("Rest", "⛺", "Heal the party, or train one Digimon."),
++    DOJO("Dojo", "🥋", "Two stat boosts for one Digimon."),
++    SHOP("Shop", "🛒", "Spend coins on items, chips and gear."),
++    TREASURE("Treasure", "💾", "Pick a data chip."),
++    BEFRIEND("Befriend", "🤝", "Win over a wild Digimon."),
++    SHRINE("Shrine", "⛩", "Trade something for a strong reward."),
++    MYSTERY("Mystery", "❓", "Could be anything.");
++
++    val isFight get() = this == BATTLE || this == ELITE || this == BOSS
++}
++
++data class MapNode(val id: Int, val row: Int, val col: Int, val width: Int, val type: NodeType, val next: List<Int>)
++
++object RunMap {
++    /** 7 rows of stops, then the boss: every path is 8 stops long. */
++    const val ROWS = 8
++
++    fun generate(seed: Long, area: Int): List<MapNode> {
++        val rng = Random(seed * 7919 + area * 104729L)
++        val widths = (0 until ROWS - 1).map { if (it == 0) 2 else 2 + rng.nextInt(2) } + 1
++        val types = widths.mapIndexed { row, w -> MutableList(w) { pickType(row, rng) } }
++        types[0].indices.forEach { types[0][it] = NodeType.BATTLE }
++        types[1][rng.nextInt(widths[1])] = NodeType.BATTLE
++        types[3][rng.nextInt(widths[3])] = NodeType.TREASURE
++        types[ROWS - 2][rng.nextInt(widths[ROWS - 2])] = NodeType.REST
++        types[ROWS - 1][0] = NodeType.BOSS
++
++        val ids = mutableListOf<IntArray>()
++        var nextId = 0
++        widths.forEach { w -> ids += IntArray(w) { nextId++ } }
++        val edges = widths.indices.map { r -> List(widths[r]) { mutableSetOf<Int>() } }
++        for (r in 0 until ROWS - 1) {
++            val a = widths[r]; val b = widths[r + 1]
++            for (i in 0 until a) {
++                val j = if (a == 1) 0 else ((i.toDouble() * (b - 1)) / (a - 1)).roundToInt()
++                edges[r][i] += j
++                if (b > 1 && rng.nextDouble() < 0.45) edges[r][i] += (j + if (rng.nextBoolean()) 1 else -1).coerceIn(0, b - 1)
++            }
++            for (j in 0 until b) if (edges[r].none { j in it }) {
++                val i = if (b == 1) 0 else ((j.toDouble() * (a - 1)) / (b - 1)).roundToInt()
++                edges[r][i] += j
++            }
++        }
++        return widths.indices.flatMap { r ->
++            (0 until widths[r]).map { c ->
++                MapNode(ids[r][c], r, c, widths[r], types[r][c],
++                    if (r + 1 < ROWS) edges[r][c].sorted().map { ids[r + 1][it] } else emptyList())
++            }
++        }
++    }
++
++    private fun pickType(row: Int, rng: Random): NodeType {
++        val weights = buildList {
++            add(NodeType.BATTLE to 40)
++            if (row >= 2) add(NodeType.ELITE to 14)
++            if (row >= 2) add(NodeType.REST to 8)
++            add(NodeType.DOJO to 6)
++            if (row >= 1) add(NodeType.SHOP to 8)
++            add(NodeType.TREASURE to 7)
++            add(NodeType.BEFRIEND to 7)
++            if (row >= 2) add(NodeType.SHRINE to 5)
++            add(NodeType.MYSTERY to 10)
++        }
++        var roll = rng.nextInt(weights.sumOf { it.second })
++        for ((t, w) in weights) { if (roll < w) return t; roll -= w }
++        return NodeType.BATTLE
++    }
++
++    /** What a Mystery stop turns out to be (fixed per node, so reopening the app can't reroll it). */
++    fun resolveMystery(seed: Long, area: Int, nodeId: Int): NodeType {
++        val r = Random(seed + area * 977L + nodeId * 31L).nextInt(100)
++        return when {
++            r < 35 -> NodeType.BATTLE
++            r < 55 -> NodeType.TREASURE
++            r < 70 -> NodeType.BEFRIEND
++            r < 85 -> NodeType.SHRINE
++            else -> NodeType.REST
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ chips
++
++data class Chip(val id: String, val name: String, val description: String, val apply: (Mods) -> Mods = { it })
++
++object Chips {
++    val ALL = listOf(
++        Chip("overclock", "Overclock Chip", "+25% ATK, −10% max HP") { it.copy(atkMul = it.atkMul * 1.25, hpMul = it.hpMul * 0.9) },
++        Chip("glass", "Glass Cannon", "+40% ATK, −25% DEF") { it.copy(atkMul = it.atkMul * 1.4, defMul = it.defMul * 0.75) },
++        Chip("firewall", "Firewall Chip", "Start every battle with a 10% Firewall") { it.copy(shieldStart = it.shieldStart + 0.10) },
++        Chip("amp", "Firewall Amp", "Firewall effects +50%") { it.copy(shieldMul = it.shieldMul * 1.5) },
++        Chip("antivirus", "Antivirus Chip", "+20% damage vs Virus") { it.copy(vsVirus = it.vsVirus + 0.20) },
++        Chip("debugger", "Debugger Chip", "+20 RES") { it.copy(res = it.res + 20) },
++        Chip("turbo", "Turbo Chip", "+5 SPD") { it.copy(spd = it.spd + 5) },
++        Chip("crit", "Crit Chip", "+10 CRIT") { it.copy(crit = it.crit + 10) },
++        Chip("scope", "Scope Chip", "+8 hit") { it.copy(hit = it.hit + 8) },
++        Chip("cache", "Cache Chip", "+1 starting Energy") { it.copy(energy = it.energy + 1) },
++        Chip("ram", "RAM Upgrade", "+1 max Energy, −5% ATK") { it.copy(energyMax = it.energyMax + 1, atkMul = it.atkMul * 0.95) },
++        Chip("leech", "Leech Chip", "Heal 8% of damage dealt") { it.copy(lifesteal = it.lifesteal + 0.08) },
++        Chip("toxin", "Toxin Chip", "Malware you apply gets +1 stack") { it.copy(extraPoison = it.extraPoison + 1) },
++        Chip("igniter", "Igniter Chip", "Basic attacks have a 20% chance to Overheat") { it.copy(basicBurn = it.basicBurn + 0.20) },
++        Chip("armor", "Armor Chip", "+12% DEF") { it.copy(defMul = it.defMul * 1.12) },
++        Chip("vital", "Vital Chip", "+12% max HP") { it.copy(hpMul = it.hpMul * 1.12) },
++        Chip("backup", "Backup Chip", "Heal an extra 10% after every battle"),
++        Chip("miner", "Coin Miner", "+50% coins from battles")
++    )
++
++    fun byId(id: String) = ALL.firstOrNull { it.id == id }
++}
++
++// ------------------------------------------------------------------------------------------ gear
++
++enum class GearSlot(val label: String) { PLUGIN("Plug-in"), CREST("Crest") }
++enum class Rarity(val label: String, val lines: Int, val power: Double) {
++    COMMON("Common", 1, 1.0), RARE("Rare", 2, 1.0), EPIC("Epic", 3, 1.15), LEGENDARY("Legendary", 3, 1.6)
++}
++
++/** One stat line on a Plug-in: "hp", "atk", "def" are fractions; "spd", "crit", "eva", "res" are flat. */
++data class GearLine(val stat: String, val value: Double)
++
++data class Gear(
++    val id: Long,
++    val slot: GearSlot,
++    val rarity: Rarity,
++    val lines: List<GearLine> = emptyList(),
++    val crest: Crest? = null
++) {
++    val name: String get() = if (crest != null) crest.label else "${rarity.label} Plug-in"
++    val description: String get() = crest?.description ?: lines.joinToString(", ") { Stats.lineText(it.stat, it.value) }
++}
++
++data class Equipped(val plugin: Gear? = null, val crest: Gear? = null)
++
++object GearRoll {
++    fun roll(rng: Random, luck: Double = 0.0): Gear {
++        val id = rng.nextLong(1, Long.MAX_VALUE)
++        if (rng.nextDouble() < 0.25) return Gear(id, GearSlot.CREST, Rarity.EPIC, crest = Crest.entries.random(rng))
++        val r = rng.nextDouble() - luck
++        val rarity = when {
++            r < 0.05 -> Rarity.LEGENDARY
++            r < 0.20 -> Rarity.EPIC
++            r < 0.50 -> Rarity.RARE
++            else -> Rarity.COMMON
++        }
++        val stats = Stats.ALL.shuffled(rng).take(rarity.lines)
++        return Gear(id, GearSlot.PLUGIN, rarity, stats.map { st ->
++            val base = if (st in Stats.PERCENT) 0.04 + rng.nextInt(3) * 0.01 else 2.0 + rng.nextInt(3)
++            GearLine(st, base * rarity.power)
++        })
++    }
++
++    /** Spare gear breaks down into run coins. */
++    fun scrapValue(g: Gear) = when (g.rarity) { Rarity.COMMON -> 10; Rarity.RARE -> 15; Rarity.EPIC -> 25; Rarity.LEGENDARY -> 40 }
++}
++
++object Stats {
++    val PERCENT = setOf("hp", "atk", "def")
++    val ALL = listOf("hp", "atk", "def", "spd", "crit", "eva", "res")
++    fun label(st: String) = when (st) { "hp" -> "HP"; "atk" -> "ATK"; "def" -> "DEF"; else -> st.uppercase() }
++    fun lineText(st: String, v: Double) =
++        if (st in PERCENT) "+${(v * 100).roundToInt()}% ${label(st)}" else "+${v.roundToInt()} ${label(st)}"
++
++    /** Adds a stat bonus to [m]. */
++    fun add(m: Mods, st: String, v: Double): Mods = when (st) {
++        "hp" -> m.copy(hpMul = m.hpMul * (1 + v))
++        "atk" -> m.copy(atkMul = m.atkMul * (1 + v))
++        "def" -> m.copy(defMul = m.defMul * (1 + v))
++        "spd" -> m.copy(spd = m.spd + v)
++        "crit" -> m.copy(crit = m.crit + v)
++        "eva" -> m.copy(eva = m.eva + v)
++        "res" -> m.copy(res = m.res + v)
++        else -> m
++    }
++}
++
++// ------------------------------------------------------------------------------------------ Bits upgrades
++
++object Upgrades {
++    const val MAX = 10
++    fun cost(level: Int) = 80 + 20 * level
++    fun perLevel(st: String) = if (st in Stats.PERCENT) 0.015 else 2.0
++    const val BITS_PER_AREA = 30
++    const val BITS_FOR_CLEAR = 10
++}
++
++// ------------------------------------------------------------------------------------------ level-ups
++
++sealed class Offer {
++    abstract val text: String
++    data class NewSkill(val skill: String) : Offer() {
++        override val text get() = "Learn $skill"
++    }
++    data class Upgrade(val skill: String, val toLevel: Int) : Offer() {
++        override val text get() = "Upgrade $skill to level $toLevel (+25%)"
++    }
++    data class Boost(val stat: String, val value: Double) : Offer() {
++        override val text get() = Stats.lineText(stat, value)
++    }
++}
++
++object Growth {
++    const val LEARNED_SLOTS = 2
++    const val MAX_SKILL_LEVEL = 3
++    fun xpFor(t: NodeType) = when (t) { NodeType.ELITE -> 25; NodeType.BOSS -> 40; else -> 10 }
++    fun xpToNext(level: Int) = 10 + 4 * level
++    fun coinsFor(t: NodeType) = when (t) { NodeType.ELITE -> 25; NodeType.BOSS -> 40; else -> 12 }
++
++    /** Skill tiers unlock by area: area 1 offers 0–1 Energy skills, area 2 adds 2 Energy, area 3 adds 3 Energy. */
++    fun maxCost(area: Int) = area + 1
++
++    fun boost(stat: String, double: Boolean = false): Offer.Boost {
++        val v = if (stat in Stats.PERCENT) 0.06 else 3.0
++        return Offer.Boost(stat, if (double) v * 2 else v)
++    }
++
++    fun skillPool(field: Field?, area: Int, known: Collection<String>): List<Skill> =
++        Skills.poolFor(field).filter { it.cost <= maxCost(area) && it.name !in known }
++
++    /** Three level-up offers: a new skill, an upgrade (or a second new skill), and a stat boost. */
++    fun offers(m: Member, field: Field?, area: Int, rng: Random): List<Offer> {
++        val out = mutableListOf<Offer>()
++        val fresh = skillPool(field, area, m.skills).shuffled(rng)
++        fresh.firstOrNull()?.let { out += Offer.NewSkill(it.name) }
++        val upgradable = m.skills.filter { (m.levels[it] ?: 1) < MAX_SKILL_LEVEL }
++        if (upgradable.isNotEmpty()) {
++            val s = upgradable.random(rng); out += Offer.Upgrade(s, (m.levels[s] ?: 1) + 1)
++        } else fresh.getOrNull(1)?.let { out += Offer.NewSkill(it.name) }
++        val stats = Stats.ALL.shuffled(rng)
++        var i = 0
++        while (out.size < 3) out += boost(stats[i++])
++        return out
++    }
++
++    fun startingOffers(field: Field?, rng: Random): List<String> =
++        skillPool(field, 0, emptyList()).shuffled(rng).take(3).map { it.name }
++
++    fun apply(m: Member, o: Offer, replace: String? = null) {
++        when (o) {
++            is Offer.NewSkill -> {
++                if (replace != null) { m.skills.remove(replace); m.levels.remove(replace) }
++                if (m.skills.size < LEARNED_SLOTS) m.skills += o.skill
++            }
++            is Offer.Upgrade -> m.levels[o.skill] = o.toLevel
++            is Offer.Boost -> m.boosts[o.stat] = (m.boosts[o.stat] ?: 0.0) + o.value
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ enemies
++
++/** One enemy slot in a fight: which card stage to use and how strong to make it. */
++data class EnemySlot(val cardStage: Int, val scale: Double, val boss: Boolean, val minion: Boolean, val atkExtra: Double = 1.0)
++
++object EnemyPlan {
++    /**
++     * The evolution ladder: enemies start as baby forms and evolve as the run goes on, whatever your party's
++     * stage. Card stages: 1 In-Training, 2 Child, 3 Adult, 4 Perfect, 5 Ultimate.
++     */
++    fun mainStage(area: Int, row: Int, type: NodeType): Int {
++        val boss = type == NodeType.BOSS
++        val elite = type == NodeType.ELITE
++        return when (area) {
++            0 -> if (boss) 3 else if (elite || row >= 3) 2 else 1
++            1 -> if (boss || elite || row >= 4) 4 else 3
++            else -> if (boss || elite || row >= 4) 5 else 4
++        }
++    }
++
++    /**
++     * Strength is set relative to your party, not the enemy's stage, so a baby in area 1 and an
++     * Ultimate in area 3 are both fair fights for any party; difficulty climbs through the areas.
++     */
++    fun slots(area: Int, row: Int, type: NodeType, partyStage: Stage): List<EnemySlot> {
++        val kind = when (type) { NodeType.ELITE -> 1; NodeType.BOSS -> 2; else -> 0 }
++        val count = Tuning.COUNT[area][kind]
++        val ramp = (0.90 + 0.03 * row) * Tuning.RUN_THREAT * Tuning.RUN_AREA[area] * Tuning.runStage(partyStage)
++        val threat = Tuning.THREAT[area][kind] * ramp
++        val main = mainStage(area, row, type)
++        return (0 until count).map { i ->
++            val minion = i >= 3
++            val boss = type == NodeType.BOSS && i == 0
++            val st = if (minion || (type == NodeType.BOSS && !boss)) maxOf(1, main - 1) else main
++            var scale = threat * partyStage.tier / Stage.fromCard(st).tier
++            var atk = 1.0
++            if (minion) scale *= Tuning.MINION
++            if (boss) { scale *= Tuning.BOSS_HP; atk = Tuning.BOSS_ATK / Tuning.BOSS_HP }
++            EnemySlot(st, scale, boss, minion, atk)
++        }
++    }
++
++    /** How many learned skills enemies get, and the most Energy those skills may cost. */
++    fun skillCount(area: Int, type: NodeType) = min(2, area + if (type == NodeType.BATTLE) 0 else 1)
++}
++
++// ------------------------------------------------------------------------------------------ run state
++
++class Member(
++    val key: Long,
++    var hp: Double = 1.0,
++    val skills: MutableList<String> = mutableListOf(),
++    val levels: MutableMap<String, Int> = mutableMapOf(),
++    val boosts: MutableMap<String, Double> = mutableMapOf()
++) {
++    val alive get() = hp > 0.0
++}
++
++/** What happens at the current stop before you can move on. */
++enum class Pending { NONE, START_SKILLS, FIGHT, LEVEL_UP, REWARD, STOP, GEAR }
++
++class RunState(
++    val seed: Long,
++    val cards: List<Long>,
++    val members: List<Member>
++) {
++    var area = 0
++    var node = -1
++    var nodeType: NodeType? = null      // the current stop's type (Mystery already resolved)
++    var pending = Pending.START_SKILLS
++    var xp = 0
++    var level = 1
++    val picks = mutableListOf<Long>()   // members still owed a level-up pick, in order
++    var counter = 0                      // advances every random offer so reopening can't reroll
++    var coins = 0
++    val chips = mutableListOf<String>()
++    val friends = mutableListOf<Long>()  // befriended card Digimon (CardCharacter ids), one assist each per battle
++    var badLuck = 0
++    var gearDrop: Gear? = null
++    val bought = mutableSetOf<Int>()     // shop items bought at the current stop
++    var stopUsed = false                 // rest/dojo/treasure/shrine/befriend choice made
++    val lineages = mutableMapOf<Int, List<List<Long>>>()   // area -> evolution chains (CardCharacter ids, lowest first)
++    val seen = mutableMapOf<Int, Long>()                    // chain index -> last form fought (this area)
++    var battlesWon = 0
++    var bossesBeaten = 0
++    var bitsEarned = 0
++    var bitsPaid = 0                      // Bits already added to the shared pool
++    var clearPaid = false                 // run-clear reward already sent home
++    var rewardWins = 0                    // per Digimon, for the summary
++    var rewardMinutes = 0                 // evolution timer cut per Digimon, for the summary
++    var gearFromStop = false              // gear bought at a shop/shrine returns to that stop
++    val visited = mutableListOf<Int>()    // stops visited in this area
++    var over = false
++    var cleared = false
++    val log = mutableListOf<String>()
++
++    fun map() = RunMap.generate(seed, area)
++    fun current(): MapNode? = map().firstOrNull { it.id == node }
++
++    /** Stops you can move to next. */
++    fun choices(): List<MapNode> {
++        val m = map()
++        return if (node < 0) m.filter { it.row == 0 } else m.first { it.id == node }.next.map { id -> m.first { it.id == id } }
++    }
++
++    fun rng(): Random = Random(seed xor (++counter * 0x9E3779B97F4A7C15uL.toLong()))
++
++    fun note(t: String) { log.add(0, t); while (log.size > 30) log.removeAt(log.size - 1) }
++
++    fun mods(m: Member, equipped: Equipped?, upgrades: Map<String, Int>): Mods {
++        var mods = Mods()
++        for (id in chips) Chips.byId(id)?.let { mods = it.apply(mods) }
++        for ((st, v) in m.boosts) mods = Stats.add(mods, st, v)
++        equipped?.plugin?.lines?.forEach { mods = Stats.add(mods, it.stat, it.value) }
++        for ((st, lv) in upgrades) mods = Stats.add(mods, st, lv * Upgrades.perLevel(st))
++        return mods
++    }
++
++    fun partyStage(stages: List<Int>): Stage =
++        Stage.fromCard(stages.maxOrNull()?.coerceIn(2, 5) ?: 2)
++
++    /** Moves to [n], resolving a Mystery, and returns the stop's real type. */
++    fun enter(n: MapNode): NodeType {
++        node = n.id
++        visited += n.id
++        val t = if (n.type == NodeType.MYSTERY) RunMap.resolveMystery(seed, area, n.id) else n.type
++        nodeType = t
++        bought.clear(); stopUsed = false; gearDrop = null
++        pending = if (t.isFight) Pending.FIGHT else Pending.STOP
++        return t
++    }
++
++    /** After a fight: HP, XP, coins, gear and level-ups. [hpLeft] is each member's HP fraction (0 = deleted). */
++    fun winFight(hpLeft: List<Double>, gearRoll: (Double) -> Gear?) {
++        val t = nodeType ?: NodeType.BATTLE
++        val heal = 0.15 + if ("backup" in chips) 0.10 else 0.0
++        members.forEachIndexed { i, m ->
++            val left = hpLeft.getOrElse(i) { m.hp }
++            m.hp = if (left <= 0) 0.25 else min(1.0, left + heal)
++        }
++        battlesWon++
++        val coinGain = (Growth.coinsFor(t) * if ("miner" in chips) 1.5 else 1.0).roundToInt()
++        coins += coinGain
++        val chance = when (t) { NodeType.BOSS -> 1.0; NodeType.ELITE -> 0.15; else -> 0.05 } + 0.03 * badLuck
++        val r = rng()
++        gearDrop = if (r.nextDouble() < chance) gearRoll(0.05 * badLuck) else null
++        badLuck = if (gearDrop != null) 0 else badLuck + 1
++        val gained = gainXp(Growth.xpFor(t))
++        note("Won the ${t.label.lowercase()}: +${Growth.xpFor(t)} XP, +$coinGain coins" + (if (gained > 0) ", level ${level}!" else ""))
++        if (t == NodeType.BOSS) {
++            bossesBeaten++
++            bitsEarned += Upgrades.BITS_PER_AREA * members.size
++        }
++        pending = when {
++            picks.isNotEmpty() -> Pending.LEVEL_UP
++            gearDrop != null -> Pending.GEAR
++            else -> Pending.NONE
++        }
++    }
++
++    fun gainXp(amount: Int): Int {
++        xp += amount
++        var gained = 0
++        while (xp >= Growth.xpToNext(level)) {
++            xp -= Growth.xpToNext(level); level++; gained++
++            members.forEach { picks += it.key }
++        }
++        return gained
++    }
++
++    /** Call when the current stop is finished. Moves to the next area after a boss. */
++    fun finishStop() {
++        pending = Pending.NONE
++        if (nodeType == NodeType.BOSS) {
++            if (area >= 2) {
++                cleared = true; over = true
++                bitsEarned += Upgrades.BITS_FOR_CLEAR * members.size
++                note("Run cleared!")
++            } else {
++                area++; node = -1; nodeType = null; seen.clear(); visited.clear()
++                members.forEach { it.hp = min(1.0, it.hp + 0.30) }
++                note("Area ${area + 1} begins. The party recovers 30%.")
++            }
++        }
++    }
++
++    fun loseFight() {
++        over = true; cleared = false
++        note("The party was deleted. Run over.")
++    }
++}
++
++// ------------------------------------------------------------------------------------------ shop
++
++data class ShopItem(val index: Int, val name: String, val description: String, val price: Int, val chip: String? = null, val kind: String)
++
++object Shop {
++    fun stock(run: RunState): List<ShopItem> {
++        val rng = Random(run.seed + run.area * 131L + run.node * 7L)
++        val chips = Chips.ALL.filter { it.id !in run.chips }.shuffled(rng).take(2)
++        return listOfNotNull(
++            ShopItem(0, "Recovery Floppy", "Heal the whole party 30%", 30, kind = "heal"),
++            ShopItem(1, "Skill Disk", "One Digimon picks a new skill", 45, kind = "skill"),
++            ShopItem(2, "Plug-in Crate", "A random piece of gear", 80, kind = "gear"),
++            chips.getOrNull(0)?.let { ShopItem(3, it.name, it.description, 60, it.id, "chip") },
++            chips.getOrNull(1)?.let { ShopItem(4, it.name, it.description, 60, it.id, "chip") }
++        )
++    }
++}
++
++// ------------------------------------------------------------------------------------------ shrine
++
++data class ShrineDeal(val id: Int, val text: String)
++
++object Shrine {
++    val DEALS = listOf(
++        ShrineDeal(0, "Offer 25% of every Digimon's HP for a random data chip"),
++        ShrineDeal(1, "Offer 40 coins for a piece of gear"),
++        ShrineDeal(2, "Offer 25% of every Digimon's HP: each one upgrades a skill"),
++        ShrineDeal(3, "Pray: 50% chance of a data chip, 50% chance to lose 20% HP")
++    )
++
++    fun deals(run: RunState): List<ShrineDeal> =
++        DEALS.shuffled(Random(run.seed + run.area * 53L + run.node * 11L)).take(2)
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/cardScreen/CardsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/cardScreen/CardsScreen.kt
 index 7908c4c..718b4a4 100644
@@ -3369,6 +4055,835 @@ index 0000000..d63bcf3
 +        }
 +    }
 +}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt
+new file mode 100644
+index 0000000..8c00cb1
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/rogue/RogueScreen.kt
+@@ -0,0 +1,823 @@
++package com.github.nacabaro.vbhelper.screens.rogue
++
++import androidx.compose.foundation.Canvas
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.BoxWithConstraints
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.ExperimentalLayoutApi
++import androidx.compose.foundation.layout.FlowRow
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.offset
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.Button
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.FilterChip
++import androidx.compose.material3.LinearProgressIndicator
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.mutableStateListOf
++import androidx.compose.runtime.mutableStateMapOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.navigation.NavController
++import com.github.nacabaro.vbhelper.components.TopBanner
++import com.github.nacabaro.vbhelper.di.VBHelper
++import com.github.nacabaro.vbhelper.domain.card.Background
++import com.github.nacabaro.vbhelper.dtos.CharacterDtos
++import com.github.nacabaro.vbhelper.dtos.TacticsDtos
++import com.github.nacabaro.vbhelper.roguelike.Chips
++import com.github.nacabaro.vbhelper.roguelike.EnemyPlan
++import com.github.nacabaro.vbhelper.roguelike.Gear
++import com.github.nacabaro.vbhelper.roguelike.GearRoll
++import com.github.nacabaro.vbhelper.roguelike.GearSlot
++import com.github.nacabaro.vbhelper.roguelike.Growth
++import com.github.nacabaro.vbhelper.roguelike.MapNode
++import com.github.nacabaro.vbhelper.roguelike.Member
++import com.github.nacabaro.vbhelper.roguelike.NodeType
++import com.github.nacabaro.vbhelper.roguelike.Offer
++import com.github.nacabaro.vbhelper.roguelike.Pending
++import com.github.nacabaro.vbhelper.roguelike.RunMap
++import com.github.nacabaro.vbhelper.roguelike.RunState
++import com.github.nacabaro.vbhelper.roguelike.Shop
++import com.github.nacabaro.vbhelper.roguelike.Shrine
++import com.github.nacabaro.vbhelper.roguelike.Skills
++import com.github.nacabaro.vbhelper.roguelike.Stage
++import com.github.nacabaro.vbhelper.roguelike.Stats
++import com.github.nacabaro.vbhelper.roguelike.TacticsBattle
++import com.github.nacabaro.vbhelper.roguelike.Upgrades
++import com.github.nacabaro.vbhelper.screens.tactics.Frames
++import com.github.nacabaro.vbhelper.screens.tactics.SpriteImage
++import com.github.nacabaro.vbhelper.screens.tactics.TacticsFight
++import com.github.nacabaro.vbhelper.source.RunRepository
++import com.github.nacabaro.vbhelper.source.StorageRepository
++import com.github.nacabaro.vbhelper.utils.DebugLog
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.launch
++import kotlin.random.Random
++
++private class FightSetup(val battle: TacticsBattle, val frames: Map<Long, Frames>, val background: Background?, val type: NodeType)
++
++/**
++ * Phase 4: the roguelike run. Your 3 Digimon cross 3 areas (one imported card each) on a branching map.
++ * Enemies start as baby forms and evolve as you go; the run saves after every step.
++ */
++@Composable
++fun RogueScreen(navController: NavController, characterId: Long) {
++    val application = LocalContext.current.applicationContext as VBHelper
++    val repo = remember { RunRepository(application, application.container.db) }
++    val scope = rememberCoroutineScope()
++    var run by remember { mutableStateOf<RunState?>(null) }
++    var loaded by remember { mutableStateOf(false) }
++    var version by remember { mutableIntStateOf(0) }
++    var fight by remember { mutableStateOf<FightSetup?>(null) }
++    var upgrades by remember { mutableStateOf(false) }
++    val party = remember { mutableStateMapOf<Long, TacticsDtos.Fighter>() }
++    val cardNames = remember { mutableStateMapOf<Long, String>() }
++
++    LaunchedEffect(Unit) {
++        run = repo.load()
++        repo.tactics.cards().forEach { cardNames[it.id] = it.name }
++        loaded = true
++    }
++    LaunchedEffect(run?.seed) {
++        run?.members?.forEach { m -> repo.tactics.stored(m.key)?.let { party[m.key] = it } }
++    }
++
++    /** Saves after every change and redraws. */
++    fun commit() {
++        version++
++        val r = run ?: return
++        scope.launch { repo.save(r); version++ }
++    }
++
++    Scaffold(
++        topBar = {
++            TopBanner(
++                text = "Roguelike run",
++                onBackClick = {
++                    when {
++                        fight != null -> fight = null       // leaving a fight restarts it next time
++                        upgrades -> upgrades = false
++                        else -> navController.popBackStack()
++                    }
++                }
++            )
++        }
++    ) { padding ->
++        Box(
++            Modifier
++                .fillMaxSize()
++                .padding(top = padding.calculateTopPadding())
++                .padding(horizontal = 12.dp)
++        ) {
++            @Suppress("UNUSED_VARIABLE") val v = version
++            val r = run
++            val f = fight
++            if (!loaded) {
++                Text("Loading…", modifier = Modifier.padding(16.dp))
++            } else if (upgrades) {
++                UpgradesPanel(repo, onClose = { upgrades = false })
++            } else if (r == null) {
++                RunSetup(repo, characterId, onUpgrades = { upgrades = true }) { partyIds, cards ->
++                    scope.launch {
++                        run = repo.newRun(partyIds, cards)
++                        version++
++                    }
++                }
++            } else if (f != null) {
++                TacticsFight(f.battle, f.frames, f.background, onDone = { fight = null }, onFinish = { won ->
++                    val type = f.type
++                    if (won) {
++                        val left = f.battle.fighters.filter { it.side == TacticsBattle.PLAYER }
++                            .map { if (it.alive) it.hp / it.maxHp else 0.0 }
++                        r.winFight(left) { luck -> GearRoll.roll(r.rng(), luck) }
++                        if (r.pending == Pending.NONE) r.finishStop()
++                        scope.launch { repo.rewardWin(r, type); repo.save(r); version++ }
++                    } else r.loseFight()
++                    fight = null
++                    commit()
++                })
++            } else {
++                RunHub(r, repo, party, cardNames, version, { commit() },
++                    onUpgrades = { upgrades = true },
++                    onFight = { setup -> fight = setup },
++                    onFinished = {
++                        repo.deleteRun(); run = null; party.clear(); version++
++                    })
++            }
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ setup
++
++@OptIn(ExperimentalLayoutApi::class)
++@Composable
++private fun RunSetup(repo: RunRepository, leaderId: Long, onUpgrades: () -> Unit, onStart: (List<Long>, List<Long>) -> Unit) {
++    val application = LocalContext.current.applicationContext as VBHelper
++    val storage = remember { StorageRepository(application.container.db) }
++    var everyone by remember { mutableStateOf<List<CharacterDtos.CharacterWithSprites>>(emptyList()) }
++    var cards by remember { mutableStateOf<List<TacticsDtos.CardOption>>(emptyList()) }
++    val party = remember { mutableStateListOf(leaderId) }
++    var areas by remember { mutableStateOf<List<TacticsDtos.CardOption>>(emptyList()) }
++    var bits by remember { mutableIntStateOf(0) }
++
++    fun reroll() {
++        val pool = cards.filter { !it.isBem }.ifEmpty { cards }
++        areas = if (pool.size >= 3) pool.shuffled().take(3) else List(3) { pool.random() }
++    }
++
++    LaunchedEffect(Unit) {
++        everyone = storage.getAllCharacters().first()
++        cards = repo.tactics.cards()
++        bits = repo.loadUpgrades().bits
++        if (cards.isNotEmpty()) reroll()
++    }
++
++    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++        Text("New run", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
++        Text("Cross 3 areas of 8 stops each. Enemies start as baby forms and evolve as you go. Each battle won sends " +
++                "+1 win and −30 min of evolution timer home to your Digimon (bosses: +1 trophy, −1 hour more; clearing the run: −2 hours).",
++            style = MaterialTheme.typography.bodySmall)
++        Text("Your team (${party.size}/3)", style = MaterialTheme.typography.titleMedium)
++        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            everyone.filter { !it.isInAdventure && it.stage >= 2 }.forEach { c ->
++                val selected = c.id in party
++                FilterChip(
++                    selected = selected,
++                    onClick = {
++                        if (c.id == leaderId) return@FilterChip
++                        if (selected) party.remove(c.id) else if (party.size < 3) party.add(c.id)
++                    },
++                    label = { SpriteImage(c.spriteIdle, c.spriteWidth, c.spriteHeight, Modifier.size(36.dp), flip = true) }
++                )
++            }
++        }
++        Text("Areas", style = MaterialTheme.typography.titleMedium)
++        if (cards.isEmpty()) Text("Import some cards first (Settings → Import card folder).", color = MaterialTheme.colorScheme.error)
++        areas.forEachIndexed { i, c -> Text("Area ${i + 1}: ${c.name}") }
++        OutlinedButton(onClick = { reroll() }, enabled = cards.isNotEmpty()) { Text("Reroll areas") }
++        OutlinedButton(onClick = onUpgrades, modifier = Modifier.fillMaxWidth()) { Text("Bits upgrades ($bits Bits)") }
++        Button(
++            onClick = { onStart(party.toList(), areas.map { it.id }) },
++            enabled = party.size == 3 && areas.size == 3,
++            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
++        ) { Text(if (party.size < 3) "Pick ${3 - party.size} more Digimon" else "Start run") }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ hub
++
++@Composable
++private fun RunHub(
++    run: RunState,
++    repo: RunRepository,
++    party: Map<Long, TacticsDtos.Fighter>,
++    cardNames: Map<Long, String>,
++    version: Int,
++    commit: () -> Unit,
++    onUpgrades: () -> Unit,
++    onFight: (FightSetup) -> Unit,
++    onFinished: () -> Unit
++) {
++    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++        Spacer(Modifier.height(4.dp))
++        if (run.over) {
++            RunOver(run, version, onFinished)
++            return@Column
++        }
++        Text("Area ${run.area + 1} of 3 · ${cardNames[run.cards[run.area]] ?: "Card"}", style = MaterialTheme.typography.titleMedium)
++        PartyPanel(run, repo, party, version)
++        when (run.pending) {
++            Pending.START_SKILLS -> StartSkills(run, repo, party, version, commit)
++            Pending.LEVEL_UP -> LevelUp(run, repo, party, version, commit)
++            Pending.GEAR -> GearPanel(run, repo, party, version, commit)
++            Pending.FIGHT -> FightIntro(run, repo, party, version, onFight)
++            Pending.STOP -> StopPanel(run, repo, party, version, commit)
++            Pending.REWARD, Pending.NONE -> {
++                Text("Choose your next stop", style = MaterialTheme.typography.labelLarge)
++                MapView(run, version) { n -> run.enter(n); commit() }
++                LegendText()
++            }
++        }
++        if (run.log.isNotEmpty()) {
++            Text("Log", style = MaterialTheme.typography.labelLarge)
++            run.log.take(6).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
++        }
++        Spacer(Modifier.height(24.dp))
++    }
++}
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun PartyPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int) {
++    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("Level ${run.level} · XP ${run.xp}/${Growth.xpToNext(run.level)} · ${run.coins} coins", fontWeight = FontWeight.SemiBold)
++            LinearProgressIndicator(progress = { run.xp.toFloat() / Growth.xpToNext(run.level) }, modifier = Modifier.fillMaxWidth())
++            run.members.forEach { m ->
++                val f = party[m.key]
++                Row(verticalAlignment = Alignment.CenterVertically) {
++                    if (f != null) SpriteImage(f.idle1, f.width, f.height, Modifier.size(36.dp), flip = true)
++                    Spacer(Modifier.width(8.dp))
++                    Column(Modifier.weight(1f)) {
++                        Text(f?.let { repo.tactics.name(it) } ?: "Digimon", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                        LinearProgressIndicator(progress = { m.hp.toFloat() }, color = Color(0xFF43A047), modifier = Modifier.fillMaxWidth().height(5.dp))
++                        Text(
++                            (if (m.skills.isEmpty()) "No learned skills" else m.skills.joinToString { s -> s + ((m.levels[s] ?: 1).takeIf { it > 1 }?.let { " Lv$it" } ?: "") }) +
++                                    (if (m.boosts.isNotEmpty()) " · " + m.boosts.entries.joinToString { (k, v) -> Stats.lineText(k, v) } else ""),
++                            fontSize = 11.sp
++                        )
++                    }
++                }
++            }
++            if (run.chips.isNotEmpty()) Text("Chips: " + run.chips.mapNotNull { Chips.byId(it)?.name }.joinToString(), fontSize = 12.sp)
++            if (run.friends.isNotEmpty()) Text("Friends who assist: ${run.friends.size}", fontSize = 12.sp)
++        }
++    }
++}
++
++@Composable
++private fun LegendText() {
++    Text(
++        NodeType.entries.joinToString("  ") { "${it.icon} ${it.label}" },
++        style = MaterialTheme.typography.bodySmall
++    )
++}
++
++// ------------------------------------------------------------------------------------------ map
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun MapView(run: RunState, version: Int, onPick: (MapNode) -> Unit) {
++    val nodes = run.map()
++    val choices = run.choices().map { it.id }.toSet()
++    val rowH = 58.dp
++    val rows = RunMap.ROWS
++    BoxWithConstraints(
++        Modifier
++            .fillMaxWidth()
++            .height(rowH * rows)
++            .clip(RoundedCornerShape(14.dp))
++            .background(Color(0xFF0E1424))
++            .border(1.dp, Color(0x559FB4FF), RoundedCornerShape(14.dp))
++    ) {
++        val w = maxWidth
++        val byId = nodes.associateBy { it.id }
++        Canvas(Modifier.fillMaxSize()) {
++            val rh = size.height / rows
++            fun c(n: MapNode) = Offset(size.width * (n.col + 0.5f) / n.width, (rows - 1 - n.row) * rh + rh / 2)
++            for (n in nodes) for (id in n.next) {
++                val m = byId[id] ?: continue
++                val walked = n.id in run.visited && m.id in run.visited
++                drawLine(
++                    color = if (walked) Color(0xFFFFC107) else Color(0x559FB4FF),
++                    start = c(n), end = c(m), strokeWidth = if (walked) 6f else 3f
++                )
++            }
++        }
++        for (n in nodes) {
++            val x = w * ((n.col + 0.5f) / n.width)
++            val y = rowH * (rows - 1 - n.row) + rowH / 2
++            val canPick = n.id in choices
++            val visited = n.id in run.visited
++            val d = if (n.type == NodeType.BOSS) 48.dp else 40.dp
++            Box(
++                Modifier
++                    .offset(x = x - d / 2, y = y - d / 2)
++                    .size(d)
++                    .clip(CircleShape)
++                    .background(
++                        when {
++                            canPick -> Color(0xFF2E7D32)
++                            visited -> Color(0xFF6D5B1E)
++                            n.type == NodeType.BOSS -> Color(0xFF5B1E2E)
++                            else -> Color(0xFF1F2A44)
++                        }
++                    )
++                    .border(2.dp, if (canPick) Color(0xFFB9F6CA) else Color(0x339FB4FF), CircleShape)
++                    .clickable(enabled = canPick) { onPick(n) },
++                contentAlignment = Alignment.Center
++            ) { Text(n.type.icon, fontSize = if (n.type == NodeType.BOSS) 22.sp else 18.sp) }
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ start skills & level-ups
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun StartSkills(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
++    val next = run.members.firstOrNull { it.skills.isEmpty() }
++    if (next == null) {
++        LaunchedEffect(Unit) { run.pending = Pending.NONE; commit() }
++        return
++    }
++    val f = party[next.key] ?: return
++    val field = repo.tactics.field(f)
++    val offers = remember(next.key) { Growth.startingOffers(field, Random(run.seed + next.key)) }
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("Starting skill for ${repo.tactics.name(f)}", fontWeight = FontWeight.SemiBold)
++            Text("Area 1 only offers 0–1 Energy skills. Stronger ones unlock in areas 2 and 3.", style = MaterialTheme.typography.bodySmall)
++            offers.forEach { name ->
++                val s = Skills.byName(name) ?: return@forEach
++                OutlinedButton(onClick = { next.skills += name; commit() }, modifier = Modifier.fillMaxWidth()) {
++                    Column(Modifier.fillMaxWidth()) {
++                        Text("${s.name} · ${if (s.cost == 0) "free" else "${s.cost} Energy"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                        Text(s.description, fontSize = 12.sp)
++                    }
++                }
++            }
++        }
++    }
++}
++
++/** After picks are done: show any gear drop, else the stop is finished. */
++private fun afterPicks(run: RunState) {
++    if (run.gearDrop != null) run.pending = Pending.GEAR else run.finishStop()
++}
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun LevelUp(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
++    val key = run.picks.firstOrNull()
++    val m = run.members.firstOrNull { it.key == key }
++    if (key == null || m == null) {
++        LaunchedEffect(Unit) { run.picks.clear(); afterPicks(run); commit() }
++        return
++    }
++    val f = party[key] ?: return
++    val offers = remember(run.counter, key) { Growth.offers(m, repo.tactics.field(f), run.area, Random(run.seed + run.counter * 7919L + key)) }
++    var learning by remember(run.counter, key) { mutableStateOf<Offer.NewSkill?>(null) }
++
++    fun done(o: Offer, replace: String? = null) {
++        Growth.apply(m, o, replace)
++        run.picks.removeAt(0); run.counter++
++        if (run.picks.isEmpty()) afterPicks(run)
++        commit()
++    }
++
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("Level up! ${repo.tactics.name(f)} picks one:", fontWeight = FontWeight.SemiBold)
++            val l = learning
++            if (l != null) {
++                Text("${l.skill} needs a slot. Replace which skill?", style = MaterialTheme.typography.bodySmall)
++                m.skills.forEach { old -> OutlinedButton(onClick = { done(l, old) }, modifier = Modifier.fillMaxWidth()) { Text("Replace $old") } }
++                OutlinedButton(onClick = { learning = null }) { Text("Back") }
++            } else offers.forEach { o ->
++                OutlinedButton(
++                    onClick = {
++                        if (o is Offer.NewSkill && m.skills.size >= Growth.LEARNED_SLOTS) learning = o else done(o)
++                    },
++                    modifier = Modifier.fillMaxWidth()
++                ) {
++                    Column(Modifier.fillMaxWidth()) {
++                        Text(o.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                        val skill = when (o) { is Offer.NewSkill -> o.skill; is Offer.Upgrade -> o.skill; else -> null }?.let { Skills.byName(it) }
++                        if (skill != null) Text("${if (skill.cost == 0) "free" else "${skill.cost} Energy"} · ${skill.description}", fontSize = 12.sp)
++                    }
++                }
++            }
++            Text("${run.picks.size} pick${if (run.picks.size == 1) "" else "s"} left", style = MaterialTheme.typography.bodySmall)
++        }
++    }
++}
++
++/** Learns [skill] on [m], asking which skill to replace when both slots are full. */
++@Composable
++private fun LearnSkill(m: Member, skill: String, onDone: () -> Unit, onCancel: () -> Unit) {
++    if (m.skills.size < Growth.LEARNED_SLOTS) {
++        LaunchedEffect(skill) { m.skills += skill; onDone() }
++        return
++    }
++    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
++        Text("$skill needs a slot. Replace which skill?", style = MaterialTheme.typography.bodySmall)
++        m.skills.toList().forEach { old ->
++            OutlinedButton(onClick = { m.skills.remove(old); m.levels.remove(old); m.skills += skill; onDone() }, modifier = Modifier.fillMaxWidth()) {
++                Text("Replace $old")
++            }
++        }
++        OutlinedButton(onClick = onCancel) { Text("Cancel") }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ fights
++
++@Composable
++private fun FightIntro(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, onFight: (FightSetup) -> Unit) {
++    val node = run.current() ?: return
++    val type = run.nodeType ?: NodeType.BATTLE
++    val scope = rememberCoroutineScope()
++    var lineup by remember(run.node, run.area) { mutableStateOf<RunRepository.Lineup?>(null) }
++    var error by remember { mutableStateOf<String?>(null) }
++    LaunchedEffect(run.node, run.area) {
++        try { lineup = repo.enemies(run, node, type) } catch (e: Exception) {
++            DebugLog.e("Rogue", "Could not build enemies", e); error = "Could not build enemies: ${e.message}"
++        }
++    }
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("${type.icon} ${type.label}", style = MaterialTheme.typography.titleMedium)
++            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
++            val l = lineup
++            if (l == null) Text("…") else {
++                l.messages.forEach { Text("✨ $it", color = Color(0xFFFFD54F), fontWeight = FontWeight.SemiBold) }
++                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                    l.enemies.forEach { (f, spec) ->
++                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
++                            SpriteImage(f.idle1, f.width, f.height, Modifier.size(44.dp), flip = false)
++                            Text(spec.name, fontSize = 10.sp)
++                            Text(spec.stage.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
++                        }
++                    }
++                }
++                Button(
++                    onClick = {
++                        scope.launch {
++                            try {
++                                val team = repo.party(run)
++                                if (team.size < run.members.size) { error = "A Digimon in this run is missing from storage."; return@launch }
++                                val enemySpecs = l.enemies.map { it.second }
++                                val frames = team.associate { (f, s) -> s.key to Frames(f) } +
++                                        l.enemies.associate { (f, s) -> s.key to Frames(f) }
++                                val bg = try { repo.tactics.background(run.cards[run.area]) } catch (e: Exception) { null }
++                                val battle = TacticsBattle(team.map { it.second }, enemySpecs, run.seed + run.counter * 31L + node.id,
++                                    assistSpecs = repo.assists(run))
++                                onFight(FightSetup(battle, frames, bg, type))
++                            } catch (e: Exception) {
++                                DebugLog.e("Rogue", "Could not start the fight", e); error = "Could not start: ${e.message}"
++                            }
++                        }
++                    },
++                    modifier = Modifier.fillMaxWidth()
++                ) { Text("Fight!") }
++            }
++        }
++    }
++}
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun GearPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
++    val g = run.gearDrop
++    fun finish() {
++        run.gearDrop = null
++        if (run.gearFromStop) { run.gearFromStop = false; run.pending = Pending.STOP } else run.finishStop()
++        commit()
++    }
++    if (g == null) {
++        LaunchedEffect(Unit) { finish() }
++        return
++    }
++    val equipped = remember(version) { repo.loadGear() }
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("Gear found: ${g.name}", style = MaterialTheme.typography.titleMedium, color = rarityColor(g))
++            Text("${g.slot.label} · ${g.description}", style = MaterialTheme.typography.bodySmall)
++            Text("Gear stays on the Digimon that equips it, for future runs too (roguelike only).", style = MaterialTheme.typography.bodySmall)
++            run.members.forEach { m ->
++                val f = party[m.key] ?: return@forEach
++                val cur = equipped[m.key]?.let { if (g.slot == GearSlot.CREST) it.crest else it.plugin }
++                OutlinedButton(onClick = { repo.equip(m.key, g); run.note("${repo.tactics.name(f)} equipped ${g.name}"); finish() }, modifier = Modifier.fillMaxWidth()) {
++                    Text("Equip on ${repo.tactics.name(f)}" + (cur?.let { " (replaces ${it.name})" } ?: ""), fontSize = 13.sp)
++                }
++            }
++            OutlinedButton(onClick = { run.coins += GearRoll.scrapValue(g); finish() }) { Text("Scrap for ${GearRoll.scrapValue(g)} coins") }
++        }
++    }
++}
++
++private fun rarityColor(g: Gear) = when {
++    g.crest != null -> Color(0xFFCE93D8)
++    g.rarity.name == "LEGENDARY" -> Color(0xFFFFB74D)
++    g.rarity.name == "EPIC" -> Color(0xFFBA68C8)
++    g.rarity.name == "RARE" -> Color(0xFF64B5F6)
++    else -> Color.Unspecified
++}
++
++// ------------------------------------------------------------------------------------------ other stops
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun StopPanel(run: RunState, repo: RunRepository, party: Map<Long, TacticsDtos.Fighter>, version: Int, commit: () -> Unit) {
++    val type = run.nodeType ?: return
++    val node = run.current() ?: return
++    var message by remember(run.node, run.area) { mutableStateOf<String?>(null) }
++    var chosen by remember(run.node, run.area) { mutableStateOf<Long?>(null) }   // a member picked for this stop
++    var skillChoice by remember(run.node, run.area) { mutableStateOf<String?>(null) }
++    var dojoLeft by remember(run.node, run.area) { mutableIntStateOf(2) }
++    val name = { key: Long -> party[key]?.let { repo.tactics.name(it) } ?: "Digimon" }
++
++    fun leave() { run.finishStop(); commit() }
++
++    @Composable
++    fun PickMember(prompt: String, onPick: (Member) -> Unit) {
++        Text(prompt, style = MaterialTheme.typography.bodySmall)
++        run.members.forEach { m -> OutlinedButton(onClick = { onPick(m) }, modifier = Modifier.fillMaxWidth()) { Text(name(m.key)) } }
++    }
++
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text("${type.icon} ${type.label}", style = MaterialTheme.typography.titleMedium)
++            Text(type.blurb, style = MaterialTheme.typography.bodySmall)
++            message?.let { Text(it, color = Color(0xFF81C784)) }
++
++            when (type) {
++                NodeType.REST -> if (!run.stopUsed) {
++                    Button(onClick = {
++                        run.members.forEach { it.hp = minOf(1.0, it.hp + 0.40) }
++                        run.stopUsed = true; message = "Everyone healed 40%."; commit()
++                    }, modifier = Modifier.fillMaxWidth()) { Text("Rest: heal everyone 40%") }
++                    PickMember("…or train one Digimon (a free level-up pick):") { m ->
++                        run.stopUsed = true; run.picks += m.key; run.pending = Pending.LEVEL_UP; commit()
++                    }
++                }
++
++                NodeType.DOJO -> if (!run.stopUsed) {
++                    val who = chosen
++                    if (who == null) PickMember("Choose who trains (2 double-strength stat boosts):") { chosen = it.key }
++                    else {
++                        val m = run.members.first { it.key == who }
++                        val opts = remember(run.node, dojoLeft) { Stats.ALL.shuffled(Random(run.seed + run.node * 13L + dojoLeft)).take(3) }
++                        Text("${name(who)}: pick a boost ($dojoLeft left)", style = MaterialTheme.typography.bodySmall)
++                        opts.forEach { st ->
++                            val b = Growth.boost(st, double = true)
++                            OutlinedButton(onClick = {
++                                Growth.apply(m, b); dojoLeft--
++                                if (dojoLeft <= 0) { run.stopUsed = true; message = "${name(who)} finished training." }
++                                commit()
++                            }, modifier = Modifier.fillMaxWidth()) { Text(b.text) }
++                        }
++                    }
++                }
++
++                NodeType.TREASURE -> if (!run.stopUsed) {
++                    val opts = remember(run.node, run.area) { Chips.ALL.filter { it.id !in run.chips }.shuffled(Random(run.seed + run.area * 17L + run.node)).take(3) }
++                    Text("Data chips last the whole run and affect all 3 Digimon.", style = MaterialTheme.typography.bodySmall)
++                    opts.forEach { c ->
++                        OutlinedButton(onClick = { run.chips += c.id; run.stopUsed = true; message = "Got ${c.name}."; commit() }, modifier = Modifier.fillMaxWidth()) {
++                            Column(Modifier.fillMaxWidth()) {
++                                Text(c.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                Text(c.description, fontSize = 12.sp)
++                            }
++                        }
++                    }
++                }
++
++                NodeType.SHOP -> {
++                    Text("Coins: ${run.coins}", fontWeight = FontWeight.SemiBold)
++                    val disk = skillChoice
++                    val who = chosen
++                    if (disk == "pick") {
++                        if (who == null) PickMember("Who uses the Skill Disk?") { chosen = it.key }
++                        else {
++                            val m = run.members.first { it.key == who }
++                            val f = party[who]
++                            val opts = remember(who, run.node) {
++                                Growth.skillPool(f?.let { repo.tactics.field(it) }, run.area, m.skills).shuffled(Random(run.seed + run.node * 5L + who)).take(3)
++                            }
++                            var learn by remember(who) { mutableStateOf<String?>(null) }
++                            val l = learn
++                            if (l != null) LearnSkill(m, l, onDone = {
++                                run.coins -= 45; run.bought += 1; skillChoice = null; chosen = null; message = "${name(who)} learned $l."; commit()
++                            }, onCancel = { learn = null })
++                            else opts.forEach { s ->
++                                OutlinedButton(onClick = { learn = s.name }, modifier = Modifier.fillMaxWidth()) {
++                                    Column(Modifier.fillMaxWidth()) {
++                                        Text("${s.name} · ${if (s.cost == 0) "free" else "${s.cost} Energy"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                        Text(s.description, fontSize = 12.sp)
++                                    }
++                                }
++                            }
++                        }
++                        OutlinedButton(onClick = { skillChoice = null; chosen = null }) { Text("Back") }
++                    } else Shop.stock(run).forEach { item ->
++                        val sold = item.index in run.bought
++                        OutlinedButton(
++                            onClick = {
++                                when (item.kind) {
++                                    "heal" -> { run.coins -= item.price; run.bought += item.index; run.members.forEach { it.hp = minOf(1.0, it.hp + 0.30) }; message = "Party healed 30%." }
++                                    "chip" -> { run.coins -= item.price; run.bought += item.index; item.chip?.let { run.chips += it }; message = "Got ${item.name}." }
++                                    "gear" -> {
++                                        run.coins -= item.price; run.bought += item.index
++                                        run.gearDrop = GearRoll.roll(run.rng()); run.gearFromStop = true; run.pending = Pending.GEAR
++                                    }
++                                    "skill" -> skillChoice = "pick"
++                                }
++                                commit()
++                            },
++                            enabled = !sold && run.coins >= item.price,
++                            modifier = Modifier.fillMaxWidth()
++                        ) {
++                            Column(Modifier.fillMaxWidth()) {
++                                Text("${item.name} · ${if (sold) "sold" else "${item.price} coins"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                Text(item.description, fontSize = 12.sp)
++                            }
++                        }
++                    }
++                }
++
++                NodeType.BEFRIEND -> if (!run.stopUsed) {
++                    var wild by remember(run.node, run.area) { mutableStateOf<TacticsDtos.Fighter?>(null) }
++                    LaunchedEffect(run.node, run.area) { wild = repo.wild(run, node) }
++                    val w = wild
++                    if (w == null) Text("…") else {
++                        val field = repo.tactics.field(w)
++                        Row(verticalAlignment = Alignment.CenterVertically) {
++                            SpriteImage(w.idle1, w.width, w.height, Modifier.size(48.dp), flip = false)
++                            Spacer(Modifier.width(8.dp))
++                            Text("A wild ${repo.tactics.name(w)} (${field?.label ?: "No Field"}) wants to help.", fontSize = 13.sp)
++                        }
++                        val who = chosen
++                        if (who == null) {
++                            Button(onClick = {
++                                run.friends += w.unitKey; run.stopUsed = true; message = "${repo.tactics.name(w)} will assist once per battle."; commit()
++                            }, modifier = Modifier.fillMaxWidth()) { Text("Assist: it jumps in for one attack each battle") }
++                            PickMember("…or Teach: one of your Digimon learns a skill from its Field:") { chosen = it.key }
++                        } else {
++                            val m = run.members.first { it.key == who }
++                            val opts = remember(who, run.node) {
++                                Growth.skillPool(field, run.area, m.skills).filter { !it.generic }.shuffled(Random(run.seed + run.node + who)).take(2)
++                            }
++                            var learn by remember(who) { mutableStateOf<String?>(null) }
++                            val l = learn
++                            if (l != null) LearnSkill(m, l, onDone = { run.stopUsed = true; message = "${name(who)} learned $l."; commit() }, onCancel = { learn = null })
++                            else {
++                                if (opts.isEmpty()) Text("Nothing new to teach.", style = MaterialTheme.typography.bodySmall)
++                                opts.forEach { s ->
++                                    OutlinedButton(onClick = { learn = s.name }, modifier = Modifier.fillMaxWidth()) {
++                                        Column(Modifier.fillMaxWidth()) {
++                                            Text("${s.name} · ${if (s.cost == 0) "free" else "${s.cost} Energy"}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++                                            Text(s.description, fontSize = 12.sp)
++                                        }
++                                    }
++                                }
++                                OutlinedButton(onClick = { chosen = null }) { Text("Back") }
++                            }
++                        }
++                    }
++                }
++
++                NodeType.SHRINE -> if (!run.stopUsed) {
++                    Shrine.deals(run).forEach { d ->
++                        val enabled = d.id != 1 || run.coins >= 40
++                        OutlinedButton(onClick = {
++                            val rng = run.rng()
++                            fun chip(): String? = Chips.ALL.filter { it.id !in run.chips }.randomOrNull(rng)?.also { run.chips += it.id }?.name
++                            run.stopUsed = true
++                            when (d.id) {
++                                0 -> { run.members.forEach { it.hp = maxOf(0.05, it.hp - 0.25) }; message = chip()?.let { "The shrine grants $it." } ?: "Nothing left to give." }
++                                1 -> { run.coins -= 40; run.gearDrop = GearRoll.roll(rng, 0.1); run.pending = Pending.GEAR }
++                                2 -> {
++                                    run.members.forEach { it.hp = maxOf(0.05, it.hp - 0.25) }
++                                    run.members.forEach { m ->
++                                        m.skills.filter { (m.levels[it] ?: 1) < Growth.MAX_SKILL_LEVEL }.randomOrNull(rng)?.let { s -> m.levels[s] = (m.levels[s] ?: 1) + 1 }
++                                    }
++                                    message = "Every Digimon's skills grow stronger."
++                                }
++                                else -> if (rng.nextBoolean()) message = chip()?.let { "Blessed: $it." } ?: "Blessed, but nothing left to give."
++                                else { run.members.forEach { it.hp = maxOf(0.05, it.hp - 0.20) }; message = "Cursed: everyone lost 20% HP." }
++                            }
++                            commit()
++                        }, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text(d.text, fontSize = 13.sp) }
++                    }
++                }
++
++                else -> {}
++            }
++
++            Button(onClick = { leave() }, modifier = Modifier.fillMaxWidth()) {
++                Text(if (run.stopUsed || type == NodeType.SHOP) "Continue" else "Skip and continue")
++            }
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ end of run
++
++@Composable
++@Suppress("UNUSED_PARAMETER")
++private fun RunOver(run: RunState, version: Int, onFinished: () -> Unit) {
++    Card(Modifier.fillMaxWidth()) {
++        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text(if (run.cleared) "Run cleared! 🏆" else "Run over", style = MaterialTheme.typography.titleLarge)
++            Text("Reached area ${run.area + 1} · level ${run.level} · ${run.battlesWon} battles won · ${run.bossesBeaten} bosses beaten")
++            Text("Bits earned: ${run.bitsEarned} (spend them on permanent roguelike upgrades)")
++            Text("Sent home to each Digimon: +${run.rewardWins} wins, −${run.rewardMinutes} min evolution timer" +
++                    if (run.bossesBeaten > 0) ", +${run.bossesBeaten} trophies" else "", style = MaterialTheme.typography.bodySmall)
++            Button(onClick = onFinished, modifier = Modifier.fillMaxWidth()) { Text("Done") }
++        }
++    }
++}
++
++// ------------------------------------------------------------------------------------------ Bits upgrades
++
++@OptIn(ExperimentalLayoutApi::class)
++@Composable
++private fun UpgradesPanel(repo: RunRepository, onClose: () -> Unit) {
++    val application = LocalContext.current.applicationContext as VBHelper
++    val storage = remember { StorageRepository(application.container.db) }
++    var everyone by remember { mutableStateOf<List<CharacterDtos.CharacterWithSprites>>(emptyList()) }
++    var state by remember { mutableStateOf(repo.loadUpgrades()) }
++    var who by remember { mutableStateOf<Long?>(null) }
++    LaunchedEffect(Unit) { everyone = storage.getAllCharacters().first().filter { it.stage >= 2 } }
++
++    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
++        Text("Bits upgrades", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
++        Text("${state.bits} Bits. Each level: +1.5% HP, ATK or DEF, or +2 SPD, CRIT, EVA or RES, up to 10 levels. " +
++                "Roguelike only: nothing changes on the bracelet.", style = MaterialTheme.typography.bodySmall)
++        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            everyone.forEach { c ->
++                FilterChip(selected = who == c.id, onClick = { who = c.id },
++                    label = { SpriteImage(c.spriteIdle, c.spriteWidth, c.spriteHeight, Modifier.size(36.dp), flip = true) })
++            }
++        }
++        val k = who
++        if (k == null) Text("Pick a Digimon above.", style = MaterialTheme.typography.bodySmall)
++        else Stats.ALL.forEach { st ->
++            val lv = state.levels[k]?.get(st) ?: 0
++            val cost = Upgrades.cost(lv)
++            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
++                Text("${Stats.label(st)} Lv $lv/${Upgrades.MAX} (${Stats.lineText(st, lv * Upgrades.perLevel(st))})", modifier = Modifier.weight(1f), fontSize = 13.sp)
++                OutlinedButton(onClick = { if (repo.buyUpgrade(k, st)) state = repo.loadUpgrades() },
++                    enabled = lv < Upgrades.MAX && state.bits >= cost) { Text(if (lv >= Upgrades.MAX) "Max" else "$cost Bits", fontSize = 12.sp) }
++            }
++        }
++        OutlinedButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Back") }
++        Spacer(Modifier.height(24.dp))
++    }
++}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/scanScreen/ScanScreenControllerImpl.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/scanScreen/ScanScreenControllerImpl.kt
 index 73043bb..3f5315e 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/scanScreen/ScanScreenControllerImpl.kt
@@ -4156,10 +5671,10 @@ index 1626405..e082ec2 100644
  
      private fun updateCardProgress(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
-index ec0173d..7075ab4 100644
+index ec0173d..ea4369e 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageDialog.kt
-@@ -43,6 +43,10 @@ fun StorageDialog(
+@@ -43,6 +43,11 @@ fun StorageDialog(
      onDismissRequest: () -> Unit,
      onClickDelete: () -> Unit,
      onSendToBracelet: () -> Unit,
@@ -4167,10 +5682,11 @@ index ec0173d..7075ab4 100644
 +    onClickJogress: () -> Unit,
 +    onClickBattle: () -> Unit,
 +    onClickTactics: () -> Unit = {},
++    onClickRogue: () -> Unit = {},
      onClickSetActive: () -> Unit,
      onClickSendToAdventure: (time: Long) -> Unit
  ) {
-@@ -136,6 +140,34 @@ fun StorageDialog(
+@@ -136,6 +141,41 @@ fun StorageDialog(
                                      Text(text = stringResource(R.string.storage_set_active))
                                  }
                              }
@@ -4187,6 +5703,13 @@ index ec0173d..7075ab4 100644
 +                        .fillMaxWidth()
 +                ) {
 +                    Text(text = stringResource(R.string.offline_battle_title))
++                }
++                Button(
++                    onClick = onClickRogue,
++                    modifier = Modifier
++                        .fillMaxWidth()
++                ) {
++                    Text(text = stringResource(R.string.rogue_title))
 +                }
 +                Button(
 +                    onClick = onClickTactics,
@@ -4206,7 +5729,7 @@ index ec0173d..7075ab4 100644
                      onClick = {
                          onSendToAdventureClicked = true
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
-index cc9d3d0..bd87026 100644
+index cc9d3d0..f84ae66 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/storageScreen/StorageScreen.kt
 @@ -12,7 +12,11 @@ import androidx.compose.foundation.lazy.grid.GridCells
@@ -4235,7 +5758,7 @@ index cc9d3d0..bd87026 100644
          }
      ) { contentPadding ->
          if (characterList.isEmpty()) {
-@@ -129,6 +140,34 @@ fun StorageScreen(
+@@ -129,6 +140,41 @@ fun StorageScreen(
                              navController.navigate(NavigationItems.Home.route)
                          }
                  },
@@ -4251,6 +5774,13 @@ index cc9d3d0..bd87026 100644
 +                    selectedCharacter = null
 +                    navController.navigate(
 +                        NavigationItems.Tactics.route.replace("{characterId}", id.toString())
++                    )
++                },
++                onClickRogue = {
++                    val id = selectedCharacter!!
++                    selectedCharacter = null
++                    navController.navigate(
++                        NavigationItems.Rogue.route.replace("{characterId}", id.toString())
 +                    )
 +                },
 +                onClickJogress = {
@@ -4272,10 +5802,10 @@ index cc9d3d0..bd87026 100644
                          NavigationItems.Scan.route.replace(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 new file mode 100644
-index 0000000..9c0cd8b
+index 0000000..0df8d2a
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
-@@ -0,0 +1,849 @@
+@@ -0,0 +1,887 @@
 +package com.github.nacabaro.vbhelper.screens.tactics
 +
 +import androidx.compose.foundation.BorderStroke
@@ -4361,7 +5891,7 @@ index 0000000..9c0cd8b
 +import kotlin.random.Random
 +
 +/** Sprite frames for one fighter on the board. */
-+private class Frames(val f: TacticsDtos.Fighter)
++internal class Frames(val f: TacticsDtos.Fighter)
 +
 +private enum class Pose { IDLE, WALK, ATTACK, DODGE, HAPPY, SLEEP }
 +
@@ -4396,7 +5926,7 @@ index 0000000..9c0cd8b
 +        ) {
 +            when (val m = mode) {
 +                is Mode.Setup -> Setup(repo, characterId) { battle, frames, bg -> mode = Mode.Fight(battle, frames, bg) }
-+                is Mode.Fight -> Fight(m.battle, m.frames, m.background, onDone = { mode = Mode.Setup })
++                is Mode.Fight -> TacticsFight(m.battle, m.frames, m.background, onDone = { mode = Mode.Setup })
 +            }
 +        }
 +    }
@@ -4559,6 +6089,8 @@ index 0000000..9c0cd8b
 +    data class Confirm(val unit: Int, val dest: Pos, val skill: Skill, val target: Int, val forecast: Forecast) : Step
 +    /** Looking at any Digimon's details; taps keep working as in [back]. */
 +    data class Inspect(val unit: Int, val back: Step) : Step
++    /** Picking the enemy a befriended Digimon will hit. */
++    data class Assist(val index: Int) : Step
 +}
 +
 +private fun skillCostText(s: Skill): String {
@@ -4576,7 +6108,14 @@ index 0000000..9c0cd8b
 +}
 +
 +@Composable
-+private fun Fight(battle: TacticsBattle, frames: Map<Long, Frames>, background: Background?, onDone: () -> Unit) {
++internal fun TacticsFight(
++    battle: TacticsBattle,
++    frames: Map<Long, Frames>,
++    background: Background?,
++    onDone: () -> Unit,
++    /** Run mode: called with true for a win when the player taps Continue. */
++    onFinish: ((Boolean) -> Unit)? = null
++) {
 +    val scope = rememberCoroutineScope()
 +    var tick by remember { mutableIntStateOf(0) }
 +    var step by remember { mutableStateOf<Step>(Step.Idle) }
@@ -4662,7 +6201,31 @@ index 0000000..9c0cd8b
 +            }
 +        }
 +
-+        Board(battle, frames, background, step, poses, popups, frame, tick) { pos -> if (!busy && winner == null) step = onTap(battle, step, pos) }
++        Board(battle, frames, background, step, poses, popups, frame, tick) { pos ->
++            if (busy || winner != null) return@Board
++            val st = step
++            if (st is Step.Assist) {
++                val target = battle.at(pos)?.takeIf { it.side == TacticsBattle.ENEMY }
++                if (target != null) {
++                    busy = true; step = Step.Idle
++                    scope.launch { animate(battle.useAssist(st.index, target)); busy = false; tick++ }
++                } else step = Step.Idle
++            } else step = onTap(battle, st, pos)
++        }
++
++        if (battle.assists.isNotEmpty() && winner == null && !battle.enemyPhase) {
++            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
++                Text("Friends:", style = MaterialTheme.typography.labelLarge)
++                battle.assists.forEachIndexed { i, a ->
++                    val used = i in battle.assistUsed
++                    OutlinedButton(onClick = { step = if (step is Step.Assist) Step.Idle else Step.Assist(i) }, enabled = !used && !busy) {
++                        Text(if (used) "${a.name} ✓" else "${a.name} assist", fontSize = 12.sp)
++                    }
++                }
++            }
++            if (step is Step.Assist) Text("Tap an enemy for ${battle.assists[(step as Step.Assist).index].name} to hit (once per battle).",
++                style = MaterialTheme.typography.bodySmall, color = Color(0xFF81C784))
++        }
 +
 +        IntentList(battle)
 +
@@ -4671,8 +6234,12 @@ index 0000000..9c0cd8b
 +                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
 +                    Text(if (winner == TacticsBattle.PLAYER) "Your team won in ${battle.round} rounds." else "Your team was deleted.",
 +                        style = MaterialTheme.typography.titleMedium)
-+                    Text("This is a test fight: no rewards or records change yet. Tell Claude what felt off.", style = MaterialTheme.typography.bodySmall)
-+                    Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Back to setup") }
++                    if (onFinish != null) {
++                        Button(onClick = { onFinish(winner == TacticsBattle.PLAYER) }, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
++                    } else {
++                        Text("This is a test fight: no rewards or records change yet. Tell Claude what felt off.", style = MaterialTheme.typography.bodySmall)
++                        Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Back to setup") }
++                    }
 +                }
 +            }
 +        } else {
@@ -4728,6 +6295,7 @@ index 0000000..9c0cd8b
 +    }
 +
 +    return when (step) {
++        is Step.Assist -> step   // handled by the fight screen
 +        is Step.Inspect -> onTap(battle, step.back, pos)
 +        is Step.Idle -> when {
 +            mineReady -> Step.Selected(here!!.id)
@@ -5010,7 +6578,7 @@ index 0000000..9c0cd8b
 +    Card(Modifier.fillMaxWidth()) {
 +        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
 +            Text("${f.name} · ${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", fontWeight = FontWeight.SemiBold)
-+            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()}" +
++            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/${f.energyMax} · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()}" +
 +                    (if (f.shield > 0) " · Firewall ${f.shield.toInt()}" else ""), style = MaterialTheme.typography.bodySmall)
 +            BuffLines(f)
 +            when (step) {
@@ -5022,7 +6590,7 @@ index 0000000..9c0cd8b
 +                            val inRange = s.kind != SkillKind.ATTACK || battle.targetsFrom(f, step.dest, s).isNotEmpty()
 +                            val usable = battle.canUse(f, s) && inRange
 +                            val why = when {
-+                                s.cost > f.energy -> "needs ${s.cost} Energy"
++                                battle.costOf(f, s) > f.energy -> "needs ${battle.costOf(f, s)} Energy"
 +                                !inRange -> "no enemy in range from here"
 +                                !battle.canUse(f, s) -> "can't use now"
 +                                else -> null
@@ -5083,7 +6651,7 @@ index 0000000..9c0cd8b
 +        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
 +            Text("${if (f.side == TacticsBattle.ENEMY) "Enemy: " else ""}${f.name}", fontWeight = FontWeight.SemiBold)
 +            Text("${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", style = MaterialTheme.typography.bodySmall)
-+            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()} · " +
++            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/${f.energyMax} · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()} · " +
 +                    "CRIT ${f.crit.toInt()}% · EVA ${f.eva.toInt()} · RES ${f.res.toInt()}" + (if (f.shield > 0) " · Firewall ${f.shield.toInt()}" else ""),
 +                style = MaterialTheme.typography.bodySmall)
 +            if (f.status.isNotEmpty()) Text("Status: " + f.status.entries.joinToString { (k, v) -> "${k.label} ($v)" }, style = MaterialTheme.typography.bodySmall)
@@ -5114,7 +6682,7 @@ index 0000000..9c0cd8b
 +}
 +
 +@Composable
-+private fun SpriteImage(bytes: ByteArray, width: Int, height: Int, modifier: Modifier, flip: Boolean) {
++internal fun SpriteImage(bytes: ByteArray, width: Int, height: Int, modifier: Modifier, flip: Boolean) {
 +    val context = LocalContext.current
 +    val data = remember(bytes) { BitmapData(bytes, width, height).getImageBitmap(context, 1, false) }
 +    Image(
@@ -5970,6 +7538,367 @@ index 0000000..0ae98a6
 +        currency.setCurrencyValue(now + amount)
 +    }
 +}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/source/RunRepository.kt b/app/src/main/java/com/github/nacabaro/vbhelper/source/RunRepository.kt
+new file mode 100644
+index 0000000..07e4a9c
+--- /dev/null
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/source/RunRepository.kt
+@@ -0,0 +1,355 @@
++package com.github.nacabaro.vbhelper.source
++
++import android.content.Context
++import com.github.nacabaro.vbhelper.database.AppDatabase
++import com.github.nacabaro.vbhelper.dtos.TacticsDtos
++import com.github.nacabaro.vbhelper.roguelike.Crest
++import com.github.nacabaro.vbhelper.roguelike.EnemyPlan
++import com.github.nacabaro.vbhelper.roguelike.Equipped
++import com.github.nacabaro.vbhelper.roguelike.FighterSpec
++import com.github.nacabaro.vbhelper.roguelike.Gear
++import com.github.nacabaro.vbhelper.roguelike.GearLine
++import com.github.nacabaro.vbhelper.roguelike.GearSlot
++import com.github.nacabaro.vbhelper.roguelike.Growth
++import com.github.nacabaro.vbhelper.roguelike.MapNode
++import com.github.nacabaro.vbhelper.roguelike.Member
++import com.github.nacabaro.vbhelper.roguelike.NodeType
++import com.github.nacabaro.vbhelper.roguelike.Pending
++import com.github.nacabaro.vbhelper.roguelike.Rarity
++import com.github.nacabaro.vbhelper.roguelike.RunState
++import com.github.nacabaro.vbhelper.roguelike.Skills
++import com.github.nacabaro.vbhelper.roguelike.Stage
++import com.github.nacabaro.vbhelper.roguelike.Upgrades
++import com.github.nacabaro.vbhelper.utils.DebugLog
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++import org.json.JSONArray
++import org.json.JSONObject
++import java.io.File
++import kotlin.math.abs
++import kotlin.random.Random
++
++private const val TAG = "Rogue"
++
++/**
++ * Everything the roguelike run needs from the phone: the saved run, gear and Bits (kept between runs),
++ * enemies built from each card's real evolution lines, and the rewards that go home to the real Digimon.
++ */
++class RunRepository(context: Context, db: AppDatabase) {
++    private val dao = db.tacticsDao()
++    val tactics = TacticsRepository(context, db)
++    private val runFile = File(context.filesDir, "rogue_run.json")
++    private val gearFile = File(context.filesDir, "rogue_gear.json")
++    private val upgradeFile = File(context.filesDir, "rogue_upgrades.json")
++    private val unitCache = mutableMapOf<Long, List<TacticsDtos.Fighter>>()
++
++    data class Lineup(val enemies: List<Pair<TacticsDtos.Fighter, FighterSpec>>, val messages: List<String>)
++
++    suspend fun units(cardId: Long): List<TacticsDtos.Fighter> = withContext(Dispatchers.IO) {
++        unitCache.getOrPut(cardId) { dao.getCardAll(cardId) }
++    }
++
++    // ------------------------------------------------------------------ run lifecycle
++
++    suspend fun newRun(party: List<Long>, cards: List<Long>): RunState {
++        val seed = System.nanoTime()
++        val run = RunState(seed, cards, party.map { Member(it) })
++        cards.forEachIndexed { area, card -> run.lineages[area] = buildLineages(card, Random(seed + area)) }
++        DebugLog.i(TAG, "New run: party $party, cards $cards")
++        save(run)
++        return run
++    }
++
++    /** Evolution chains on a card, starting from baby forms: In-Training → Child → … as far as the card goes. */
++    private suspend fun buildLineages(cardId: Long, rng: Random): List<List<Long>> {
++        val all = units(cardId)
++        val byId = all.associateBy { it.unitKey }
++        val evos = withContext(Dispatchers.IO) { dao.getEvolutions(cardId) }.groupBy({ it.fromId }, { it.toId })
++        val roots = all.filter { it.stage == 1 }.ifEmpty { all.filter { it.stage == 2 } }.ifEmpty { all }
++        if (roots.isEmpty()) return emptyList()
++        val chains = mutableListOf<List<Long>>()
++        repeat(12) { i ->
++            if (chains.size >= 5) return@repeat
++            val root = roots[(i + rng.nextInt(roots.size)) % roots.size]
++            val chain = mutableListOf(root.unitKey)
++            var cur = root
++            repeat(8) {
++                val next = evos[cur.unitKey].orEmpty().mapNotNull { byId[it] }.filter { it.stage > cur.stage }.randomOrNull(rng)
++                    ?: return@repeat
++                chain += next.unitKey; cur = next
++            }
++            if (chain !in chains) chains += chain
++        }
++        return chains
++    }
++
++    // ------------------------------------------------------------------ fighters
++
++    private fun group(stage: Int) = stage.coerceIn(1, 5)
++
++    /** A card Digimon for [stage] from evolution chain [chain], or the closest one the card has. */
++    private suspend fun pick(run: RunState, chain: Int, stage: Int, rng: Random): TacticsDtos.Fighter? {
++        val all = units(run.cards[run.area])
++        if (all.isEmpty()) return null
++        val byId = all.associateBy { it.unitKey }
++        val chains = run.lineages[run.area].orEmpty()
++        if (chains.isNotEmpty()) {
++            val c = chains[chain % chains.size].mapNotNull { byId[it] }
++            c.firstOrNull { group(it.stage) == stage }?.let { return it }
++        }
++        val best = all.map { group(it.stage) }.distinct().minBy { abs(it - stage) }
++        return all.filter { group(it.stage) == best }.random(rng)
++    }
++
++    /** Baby forms (and odd entries) have no battle stats on the card: use their stage's typical numbers. */
++    private fun fixStats(f: TacticsDtos.Fighter): TacticsDtos.Fighter {
++        if (f.hp > 0 && f.ap > 0 && f.dp > 0) return f
++        val st = Stage.fromCard(f.stage)
++        return f.copy(hp = st.medHp.toInt(), ap = st.medAp.toInt(), dp = st.medDp.toInt())
++    }
++
++    suspend fun partyStage(run: RunState): Stage =
++        run.partyStage(run.members.mapNotNull { tactics.stored(it.key)?.stage })
++
++    suspend fun enemies(run: RunState, node: MapNode, type: NodeType): Lineup {
++        val stage = partyStage(run)
++        val slots = EnemyPlan.slots(run.area, node.row, type, stage)
++        val rng = Random(run.seed + run.area * 1000L + node.id)
++        val messages = mutableListOf<String>()
++        val out = slots.mapIndexedNotNull { i, slot ->
++            val chain = if (slot.boss) 0 else (i + node.id) % 5
++            val f = pick(run, chain, slot.cardStage, rng) ?: return@mapIndexedNotNull null
++            if (!slot.minion) {
++                val prev = run.seen[chain]
++                val p = if (prev != null && prev != f.unitKey) units(run.cards[run.area]).firstOrNull { it.unitKey == prev } else null
++                if (p != null && p.stage < f.stage) messages += "${tactics.name(p)} digivolved into ${tactics.name(f)}!"
++                run.seen[chain] = f.unitKey
++            }
++            val skills = Growth.skillPool(tactics.field(f), run.area, emptyList()).filter { !it.generic }
++                .shuffled(rng).take(EnemyPlan.skillCount(run.area, type))
++            val spec = tactics.spec(fixStats(f), skills, slot.scale, slot.scale * slot.atkExtra)
++                .copy(key = -(i + 1).toLong(), name = tactics.name(f) + if (slot.boss) " (Boss)" else "")
++            f to spec
++        }
++        return Lineup(out, messages)
++    }
++
++    suspend fun party(run: RunState): List<Pair<TacticsDtos.Fighter, FighterSpec>> {
++        val gear = loadGear()
++        val ups = loadUpgrades()
++        return run.members.mapNotNull { m ->
++            val f = tactics.stored(m.key) ?: return@mapNotNull null
++            val eq = gear[m.key]
++            f to tactics.spec(f, m.skills.mapNotNull { Skills.byName(it) }).copy(
++                startHp = maxOf(0.01, m.hp),
++                skillLevels = m.levels.toMap(),
++                mods = run.mods(m, eq, ups.levels[m.key].orEmpty()),
++                crest = eq?.crest?.crest
++            )
++        }
++    }
++
++    /** Befriended Digimon, strengthened to match your party so their assist always matters. */
++    suspend fun assists(run: RunState): List<FighterSpec> {
++        val stage = partyStage(run)
++        val pool = run.cards.distinct().flatMap { units(it) }
++        return run.friends.mapIndexedNotNull { i, id ->
++            val f = pool.firstOrNull { it.unitKey == id } ?: return@mapIndexedNotNull null
++            val scale = stage.tier / Stage.fromCard(f.stage).tier
++            tactics.spec(fixStats(f), emptyList(), scale, scale).copy(key = -(100 + i).toLong())
++        }
++    }
++
++    /** A wild Digimon for a Befriend stop, at the stage enemies are at right now. */
++    suspend fun wild(run: RunState, node: MapNode): TacticsDtos.Fighter? {
++        val stage = EnemyPlan.mainStage(run.area, node.row, NodeType.BATTLE)
++        return pick(run, Random(run.seed + node.id).nextInt(5), stage, Random(run.seed + node.id * 3L))
++    }
++
++    suspend fun friend(run: RunState, id: Long): TacticsDtos.Fighter? =
++        run.cards.distinct().flatMap { units(it) }.firstOrNull { it.unitKey == id }
++
++    // ------------------------------------------------------------------ rewards home
++
++    /** Battle won: +1 win and −30 min timer for each Digimon; boss: +1 trophy and another −60 min. */
++    suspend fun rewardWin(run: RunState, type: NodeType) = withContext(Dispatchers.IO) {
++        val minutes = 30 + if (type == NodeType.BOSS) 60 else 0
++        for (m in run.members) {
++            try {
++                dao.addWin(m.key)
++                dao.cutTimer(m.key, minutes)
++                if (type == NodeType.BOSS) dao.addTrophy(m.key)
++            } catch (e: Exception) {
++                DebugLog.e(TAG, "Could not send a reward home to Digimon ${m.key}", e)
++            }
++        }
++        run.rewardWins++
++        run.rewardMinutes += minutes
++    }
++
++    private suspend fun rewardClear(run: RunState) = withContext(Dispatchers.IO) {
++        for (m in run.members) try { dao.cutTimer(m.key, 120) } catch (e: Exception) { DebugLog.e(TAG, "Clear reward failed", e) }
++        run.rewardMinutes += 120
++    }
++
++    // ------------------------------------------------------------------ saving
++
++    suspend fun save(run: RunState) = withContext(Dispatchers.IO) {
++        if (run.cleared && !run.clearPaid) { run.clearPaid = true; rewardClear(run) }
++        if (run.bitsEarned > run.bitsPaid) {
++            addBits(run.bitsEarned - run.bitsPaid); run.bitsPaid = run.bitsEarned
++        }
++        try { runFile.writeText(runToJson(run).toString()) } catch (e: Exception) { DebugLog.e(TAG, "Could not save the run", e) }
++    }
++
++    suspend fun load(): RunState? = withContext(Dispatchers.IO) {
++        if (!runFile.exists()) return@withContext null
++        try { runFromJson(JSONObject(runFile.readText())) } catch (e: Exception) {
++            DebugLog.e(TAG, "Saved run was unreadable; starting fresh", e); null
++        }
++    }
++
++    fun deleteRun() { runFile.delete() }
++
++    private fun runToJson(r: RunState) = JSONObject().apply {
++        put("v", 1)
++        put("seed", r.seed)
++        put("cards", JSONArray(r.cards))
++        put("members", JSONArray(r.members.map { m ->
++            JSONObject().put("key", m.key).put("hp", m.hp).put("skills", JSONArray(m.skills))
++                .put("levels", JSONObject(m.levels.mapValues { it.value } as Map<*, *>))
++                .put("boosts", JSONObject(m.boosts.mapValues { it.value } as Map<*, *>))
++        }))
++        put("area", r.area); put("node", r.node); put("nodeType", r.nodeType?.name ?: "")
++        put("pending", r.pending.name); put("xp", r.xp); put("level", r.level)
++        put("picks", JSONArray(r.picks)); put("counter", r.counter); put("coins", r.coins)
++        put("chips", JSONArray(r.chips)); put("friends", JSONArray(r.friends)); put("badLuck", r.badLuck)
++        r.gearDrop?.let { put("gearDrop", gearToJson(it)) }
++        put("bought", JSONArray(r.bought.toList())); put("stopUsed", r.stopUsed)
++        put("lineages", JSONObject().apply { r.lineages.forEach { (a, cs) -> put(a.toString(), JSONArray(cs.map { JSONArray(it) })) } })
++        put("seen", JSONObject().apply { r.seen.forEach { (k, v) -> put(k.toString(), v) } })
++        put("battlesWon", r.battlesWon); put("bossesBeaten", r.bossesBeaten)
++        put("bitsEarned", r.bitsEarned); put("bitsPaid", r.bitsPaid); put("clearPaid", r.clearPaid)
++        put("rewardWins", r.rewardWins); put("rewardMinutes", r.rewardMinutes); put("gearFromStop", r.gearFromStop)
++        put("visited", JSONArray(r.visited)); put("over", r.over); put("cleared", r.cleared)
++        put("log", JSONArray(r.log))
++    }
++
++    private fun longs(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getLong(it) }
++    private fun ints(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getInt(it) }
++    private fun strings(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
++
++    private fun runFromJson(o: JSONObject): RunState {
++        val ma = o.getJSONArray("members")
++        val members = (0 until ma.length()).map { i ->
++            val m = ma.getJSONObject(i)
++            val lv = m.optJSONObject("levels") ?: JSONObject()
++            val bo = m.optJSONObject("boosts") ?: JSONObject()
++            Member(
++                m.getLong("key"), m.getDouble("hp"), strings(m.optJSONArray("skills")).toMutableList(),
++                lv.keys().asSequence().associateWith { lv.getInt(it) }.toMutableMap(),
++                bo.keys().asSequence().associateWith { bo.getDouble(it) }.toMutableMap()
++            )
++        }
++        val r = RunState(o.getLong("seed"), longs(o.getJSONArray("cards")), members)
++        r.area = o.optInt("area"); r.node = o.optInt("node", -1)
++        r.nodeType = o.optString("nodeType").takeIf { it.isNotEmpty() }?.let { NodeType.valueOf(it) }
++        r.pending = Pending.valueOf(o.optString("pending", "NONE"))
++        r.xp = o.optInt("xp"); r.level = o.optInt("level", 1)
++        r.picks += longs(o.optJSONArray("picks")); r.counter = o.optInt("counter"); r.coins = o.optInt("coins")
++        r.chips += strings(o.optJSONArray("chips")); r.friends += longs(o.optJSONArray("friends")); r.badLuck = o.optInt("badLuck")
++        r.gearDrop = o.optJSONObject("gearDrop")?.let { gearFromJson(it) }
++        r.bought += ints(o.optJSONArray("bought")); r.stopUsed = o.optBoolean("stopUsed")
++        o.optJSONObject("lineages")?.let { l ->
++            l.keys().forEach { k ->
++                val arr = l.getJSONArray(k)
++                r.lineages[k.toInt()] = (0 until arr.length()).map { longs(arr.getJSONArray(it)) }
++            }
++        }
++        o.optJSONObject("seen")?.let { s -> s.keys().forEach { k -> r.seen[k.toInt()] = s.getLong(k) } }
++        r.battlesWon = o.optInt("battlesWon"); r.bossesBeaten = o.optInt("bossesBeaten")
++        r.bitsEarned = o.optInt("bitsEarned"); r.bitsPaid = o.optInt("bitsPaid"); r.clearPaid = o.optBoolean("clearPaid")
++        r.rewardWins = o.optInt("rewardWins"); r.rewardMinutes = o.optInt("rewardMinutes"); r.gearFromStop = o.optBoolean("gearFromStop")
++        r.visited += ints(o.optJSONArray("visited")); r.over = o.optBoolean("over"); r.cleared = o.optBoolean("cleared")
++        r.log += strings(o.optJSONArray("log"))
++        return r
++    }
++
++    // ------------------------------------------------------------------ gear (kept between runs)
++
++    private fun gearToJson(g: Gear) = JSONObject().put("id", g.id).put("slot", g.slot.name).put("rarity", g.rarity.name)
++        .put("crest", g.crest?.name ?: "")
++        .put("lines", JSONArray(g.lines.map { JSONObject().put("stat", it.stat).put("value", it.value) }))
++
++    private fun gearFromJson(o: JSONObject): Gear {
++        val la = o.optJSONArray("lines") ?: JSONArray()
++        return Gear(
++            o.getLong("id"), GearSlot.valueOf(o.getString("slot")), Rarity.valueOf(o.getString("rarity")),
++            (0 until la.length()).map { la.getJSONObject(it).let { l -> GearLine(l.getString("stat"), l.getDouble("value")) } },
++            o.optString("crest").takeIf { it.isNotEmpty() }?.let { Crest.valueOf(it) }
++        )
++    }
++
++    fun loadGear(): Map<Long, Equipped> = try {
++        if (!gearFile.exists()) emptyMap() else {
++            val o = JSONObject(gearFile.readText())
++            o.keys().asSequence().associate { k ->
++                val e = o.getJSONObject(k)
++                k.toLong() to Equipped(e.optJSONObject("plugin")?.let { gearFromJson(it) }, e.optJSONObject("crest")?.let { gearFromJson(it) })
++            }
++        }
++    } catch (e: Exception) { DebugLog.e(TAG, "Gear file unreadable", e); emptyMap() }
++
++    /** Equips [g] on Digimon [key] and returns what it replaced. */
++    fun equip(key: Long, g: Gear): Gear? {
++        val all = loadGear().toMutableMap()
++        val cur = all[key] ?: Equipped()
++        val old = if (g.slot == GearSlot.CREST) cur.crest else cur.plugin
++        all[key] = if (g.slot == GearSlot.CREST) cur.copy(crest = g) else cur.copy(plugin = g)
++        val o = JSONObject()
++        all.forEach { (k, e) ->
++            o.put(k.toString(), JSONObject().apply {
++                e.plugin?.let { put("plugin", gearToJson(it)) }
++                e.crest?.let { put("crest", gearToJson(it)) }
++            })
++        }
++        gearFile.writeText(o.toString())
++        return old
++    }
++
++    // ------------------------------------------------------------------ Bits upgrades (shared pool)
++
++    data class UpgradeState(val bits: Int, val levels: Map<Long, Map<String, Int>>)
++
++    fun loadUpgrades(): UpgradeState = try {
++        if (!upgradeFile.exists()) UpgradeState(0, emptyMap()) else {
++            val o = JSONObject(upgradeFile.readText())
++            val l = o.optJSONObject("levels") ?: JSONObject()
++            UpgradeState(o.optInt("bits"), l.keys().asSequence().associate { k ->
++                val s = l.getJSONObject(k)
++                k.toLong() to s.keys().asSequence().associateWith { s.getInt(it) }
++            })
++        }
++    } catch (e: Exception) { DebugLog.e(TAG, "Upgrades file unreadable", e); UpgradeState(0, emptyMap()) }
++
++    private fun saveUpgrades(u: UpgradeState) {
++        val l = JSONObject()
++        u.levels.forEach { (k, m) -> l.put(k.toString(), JSONObject(m as Map<*, *>)) }
++        upgradeFile.writeText(JSONObject().put("bits", u.bits).put("levels", l).toString())
++    }
++
++    private fun addBits(n: Int) {
++        val u = loadUpgrades(); saveUpgrades(u.copy(bits = u.bits + n))
++    }
++
++    /** Buys one level of [stat] for Digimon [key]. Returns false if it can't. */
++    fun buyUpgrade(key: Long, stat: String): Boolean {
++        val u = loadUpgrades()
++        val lv = u.levels[key]?.get(stat) ?: 0
++        val cost = Upgrades.cost(lv)
++        if (lv >= Upgrades.MAX || u.bits < cost) return false
++        val mine = (u.levels[key] ?: emptyMap()).toMutableMap().apply { put(stat, lv + 1) }
++        saveUpgrades(UpgradeState(u.bits - cost, u.levels + (key to mine)))
++        return true
++    }
++}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/source/TacticsRepository.kt b/app/src/main/java/com/github/nacabaro/vbhelper/source/TacticsRepository.kt
 new file mode 100644
 index 0000000..4869308
@@ -6233,7 +8162,7 @@ index 2caa2c4..a238360 100644
          Este aplicativo ainda está em versão alfa e não está completo. Não o use para armazenar personagens importantes para você, pois futuras atualizações podem apagar todos os seus personagens. Desculpe pelo transtorno!
      </string>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index e3a5d26..113bbd8 100644
+index e3a5d26..ccb3666 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
 @@ -1,5 +1,5 @@
@@ -6243,7 +8172,7 @@ index e3a5d26..113bbd8 100644
      <string name="beta_warning_message_main">
          This application is currently in alpha and it is not complete. Do not use it to store important characters for you, as any future updates might delete all your characters. Sorry for the inconvenience!
      </string>
-@@ -232,4 +232,115 @@
+@@ -232,4 +232,116 @@
      <string name="companion_logs_warning">Warning: Log transfer might take a while</string>
      <string name="settings_companion_send_watch_logs_title">Send Watch Logs</string>
      <string name="companion_transfer_disabled_message">Transfer is currently disabled</string>
@@ -6358,4 +8287,5 @@ index e3a5d26..113bbd8 100644
 +    <string name="offline_credits_earned">+%1$d credits</string>
 +    <string name="offline_back_to_hub">Back</string>
 +    <string name="tactics_title">Tactics battle (test)</string>
++    <string name="rogue_title">Roguelike run</string>
  </resources>
