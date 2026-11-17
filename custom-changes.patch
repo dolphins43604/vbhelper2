@@ -263,14 +263,16 @@ index 0000000..d091a44
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt b/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt
 new file mode 100644
-index 0000000..4e0ae06
+index 0000000..9cf9e2e
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/daos/TacticsDao.kt
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,102 @@
 +package com.github.nacabaro.vbhelper.daos
 +
 +import androidx.room.Dao
++import androidx.room.Insert
 +import androidx.room.Query
++import com.github.nacabaro.vbhelper.domain.card.Background
 +import com.github.nacabaro.vbhelper.dtos.TacticsDtos
 +
 +@Dao
@@ -356,6 +358,16 @@ index 0000000..4e0ae06
 +    """
 +    )
 +    suspend fun getCards(): List<TacticsDtos.CardOption>
++
++    /** The card's own background art (saved on import), drawn behind the tactics board. */
++    @Query("SELECT * FROM Background WHERE cardId = :cardId ORDER BY id LIMIT 1")
++    suspend fun getBackground(cardId: Long): Background?
++
++    @Query("SELECT COUNT(*) FROM Background WHERE cardId = :cardId")
++    suspend fun countBackgrounds(cardId: Long): Int
++
++    @Insert
++    suspend fun insertBackground(background: Background)
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/daos/ToolsDao.kt b/app/src/main/java/com/github/nacabaro/vbhelper/daos/ToolsDao.kt
 new file mode 100644
@@ -732,10 +744,10 @@ index 77b9b91..d0cb0ae 100644
          R.drawable.baseline_data_24,
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
 new file mode 100644
-index 0000000..5106596
+index 0000000..d2ee7b6
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueContent.kt
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,304 @@
 +package com.github.nacabaro.vbhelper.roguelike
 +
 +/**
@@ -788,8 +800,8 @@ index 0000000..5106596
 +}
 +
 +enum class Status(val label: String, val negative: Boolean) {
-+    BURN("Burn", true), POISON("Poison", true), SLOW("Slow", true), STUN("Stun", true),
-+    WEAKEN("Weaken", true), CURSE("Curse", true), REGEN("Regen", false)
++    BURN("Overheat", true), POISON("Malware", true), SLOW("Lag", true), STUN("Crash", true),
++    WEAKEN("Throttle", true), CURSE("Glitch", true), REGEN("Repair", false)
 +}
 +
 +object Tuning {
@@ -841,6 +853,7 @@ index 0000000..5106596
 +    const val CURSE = 0.5; const val CURSE_T = 3
 +    const val SHIELD_T = 3
 +    const val REGEN = 0.06; const val REGEN_T = 3
++    const val AURA_T = 3
 +
 +    const val UPGRADE = 0.25
 +
@@ -856,8 +869,25 @@ index 0000000..5106596
 +    const val BOSS_ATK = 1.25
 +}
 +
-+enum class SkillKind { ATTACK, SELF, ALLY, TEAM, FOES, REVIVE }
-+enum class Area { SINGLE, SPLASH, MULTI3, HITS4 }
++enum class SkillKind { ATTACK, SELF, ALLY, TEAM, FOES, REVIVE, AURA }
++
++/**
++ * Who an attack hits. SPLASH: target + enemies next to it. LINE: every enemy in a straight line (row or column).
++ * CLEAVE: target + every enemy next to the attacker. NOVA: every enemy within range of the attacker.
++ */
++enum class Area { SINGLE, SPLASH, MULTI3, HITS4, LINE, CLEAVE, NOVA }
++
++/** Melee auras: last a few turns and affect everyone within the skill's range (usually 1) of the holder. */
++enum class AuraKind(val ally: Boolean) {
++    MIGHT(true),    // allies deal +value damage
++    WARD(true),     // allies take −value damage
++    GALE(true),     // allies get +value EVA
++    MEND(true),     // allies heal value × max HP each turn
++    FLAME(false),   // enemies take value × max HP at the start of their turn
++    FROST(false),   // enemies get Slowed at the start of their turn
++    MIASMA(false),  // enemies get +1 Poison at the start of their turn
++    DREAD(false)    // enemies deal −value damage
++}
 +
 +data class Skill(
 +    val name: String,
@@ -880,6 +910,7 @@ index 0000000..5106596
 +    val buffDmg: Double = 0.0, val selfDef: Double = 0.0, val buffEva: Double = 0.0, val buffMove: Int = 0,
 +    val buffSpd: Double = 0.0, val buffCrit: Double = 0.0, val buffRes: Double = 0.0, val thorns: Double = 0.0,
 +    val buffTurns: Int = 2, val overclock: Int = 0, val energy: Int = 0,
++    val aura: AuraKind? = null, val auraValue: Double = 0.0,
 +    val generic: Boolean = false,
 +    val description: String = ""
 +) {
@@ -888,81 +919,112 @@ index 0000000..5106596
 +
 +object Skills {
 +    val BASIC = Skill("Attack", null, 0, SkillKind.ATTACK, 1.0, 1, description = "Small attack. The target counters if it survives.")
-+    val SIGNATURE = Skill("Signature", null, 3, SkillKind.ATTACK, 1.8, 2, noCounter = true, description = "Big attack, range 2, no counter.")
++    val SIGNATURE = Skill("Special Move", null, 3, SkillKind.ATTACK, 1.8, 2, noCounter = true, description = "Big attack, range 2, no counter.")
 +
 +    private fun a(name: String, f: Field, cost: Int, power: Double, range: Int, desc: String, b: (Skill) -> Skill = { it }) =
 +        b(Skill(name, f, cost, SkillKind.ATTACK, power, range, description = desc))
 +
++    private fun aura(name: String, f: Field, cost: Int, kind: AuraKind, value: Double, desc: String) =
++        Skill(name, f, cost, SkillKind.AURA, range = 1, aura = kind, auraValue = value, buffTurns = Tuning.AURA_T, description = "$desc (3 turns)")
++
 +    val POOL: List<Skill> = listOf(
 +        // Dragon's Roar
-+        a("Blaze Rush", Field.DR, 1, 1.3, 1, "1.3× damage, Burn") { it.copy(burn = 1.0) },
-+        Skill("Berserk", Field.DR, 1, SkillKind.SELF, buffDmg = 0.30, selfDef = -0.15, buffTurns = 2, description = "Self: +30% damage, −15% DEF for 2 turns"),
-+        a("Last Stand", Field.DR, 2, 1.0, 1, "1× damage, up to +150% at low HP") { it.copy(missingHp = 1.5) },
++        a("Nova Rush", Field.DR, 1, 1.3, 1, "1.3× damage, Overheat") { it.copy(burn = 1.0) },
++        Skill("Rage Mode", Field.DR, 1, SkillKind.SELF, buffDmg = 0.30, selfDef = -0.15, buffTurns = 2, description = "+30% damage, −15% DEF for 2 turns"),
++        a("Final Burst", Field.DR, 2, 1.0, 1, "1× damage, up to +150% at low HP") { it.copy(missingHp = 1.5) },
 +        a("Dragon Dive", Field.DR, 2, 1.4, 3, "1.4× damage, range 3"),
-+        Skill("Roar", Field.DR, 1, SkillKind.FOES, range = 1, weaken = 1.0, description = "Adjacent enemies: Weaken"),
-+        a("Inferno", Field.DR, 3, 1.2, 1, "1.2× damage to the target and enemies next to it, Burn") { it.copy(area = Area.SPLASH, burn = 1.0) },
-+        Skill("Second Wind", Field.DR, 1, SkillKind.SELF, heal = 0.15, healBelow = 0.5, description = "Self: heal 15% (only below 50% HP)"),
++        Skill("Dragon Roar", Field.DR, 1, SkillKind.FOES, range = 1, weaken = 1.0, description = "Adjacent enemies: Throttle"),
++        a("Giga Inferno", Field.DR, 3, 1.2, 1, "1.2× damage to the target and enemies next to it, Overheat") { it.copy(area = Area.SPLASH, burn = 1.0) },
++        Skill("Rekindle", Field.DR, 1, SkillKind.SELF, heal = 0.15, healBelow = 0.5, description = "Heal 15% (only below 50% HP)"),
 +        // Nature Spirits
-+        a("Flank", Field.NSP, 1, 1.2, 1, "1.2× damage, +30% per ally next to the target") { it.copy(allyAdj = 0.30) },
-+        Skill("Howl", Field.NSP, 1, SkillKind.TEAM, range = 2, buffDmg = 0.25, buffTurns = 2, description = "Allies within 2: +25% damage for 2 turns"),
-+        a("Pounce", Field.NSP, 2, 1.3, 3, "1.3× damage, range 3, Slow") { it.copy(slow = 1.0) },
-+        a("Rockslide", Field.NSP, 2, 1.1, 2, "1.1× damage, 25% Stun") { it.copy(stun = 0.25) },
-+        Skill("Encircle", Field.NSP, 1, SkillKind.TEAM, range = 1, shield = 0.10, description = "Adjacent allies and self: Shield 10%"),
-+        a("Alpha Strike", Field.NSP, 3, 2.0, 1, "2× damage, +20% per ally next to the target") { it.copy(allyAdj = 0.20) },
-+        Skill("Thick Hide", Field.NSP, 1, SkillKind.SELF, shield = 0.20, description = "Self: Shield 20%"),
++        a("Pack Fang", Field.NSP, 1, 1.2, 1, "1.2× damage, +30% per ally next to the target") { it.copy(allyAdj = 0.30) },
++        Skill("Wild Howl", Field.NSP, 1, SkillKind.TEAM, range = 2, buffDmg = 0.25, buffTurns = 2, description = "Allies within 2: +25% damage for 2 turns"),
++        a("Pounce", Field.NSP, 2, 1.3, 3, "1.3× damage, range 3, Lag") { it.copy(slow = 1.0) },
++        a("Rock Smash", Field.NSP, 2, 1.1, 2, "1.1× damage, 25% Crash") { it.copy(stun = 0.25) },
++        Skill("Pack Guard", Field.NSP, 1, SkillKind.TEAM, range = 1, shield = 0.10, description = "Adjacent allies and self: Firewall 10%"),
++        a("Alpha Fang", Field.NSP, 3, 2.0, 1, "2× damage, +20% per ally next to the target") { it.copy(allyAdj = 0.20) },
++        Skill("Hard Hide", Field.NSP, 1, SkillKind.SELF, shield = 0.20, description = "Firewall 20%"),
 +        // Deep Savers
-+        a("Tidal Wave", Field.DS, 2, 0.7, 3, "0.7× damage to the target and enemies next to it, 60% Slow") { it.copy(area = Area.SPLASH, slow = 0.6) },
-+        Skill("Healing Rain", Field.DS, 1, SkillKind.TEAM, range = 2, regen = true, description = "Allies within 2: Regen"),
-+        a("Undertow", Field.DS, 1, 0.8, 2, "0.8× damage, Slow, pulls 2") { it.copy(slow = 1.0, pull = 2) },
-+        a("Freeze", Field.DS, 2, 0.8, 2, "0.8× damage, 35% Stun (+35% if Slowed)") { it.copy(stun = 0.35, stunIfSlow = 0.35) },
-+        a("Deep Pressure", Field.DS, 1, 1.0, 1, "1× damage, +40% vs Slowed") { it.copy(vsSlow = 0.40) },
-+        Skill("Bubble Shield", Field.DS, 1, SkillKind.ALLY, range = 3, shield = 0.25, description = "One ally within 3: Shield 25%"),
-+        a("Abyss", Field.DS, 3, 1.4, 2, "1.4× damage, heals 30% of damage") { it.copy(lifesteal = 0.30) },
++        a("Aqua Blaster", Field.DS, 2, 0.7, 3, "0.7× damage to the target and enemies next to it, 60% Lag") { it.copy(area = Area.SPLASH, slow = 0.6) },
++        Skill("Healing Mist", Field.DS, 1, SkillKind.TEAM, range = 2, regen = true, description = "Allies within 2: Repair"),
++        a("Undertow", Field.DS, 1, 0.8, 2, "0.8× damage, Lag, pulls 2") { it.copy(slow = 1.0, pull = 2) },
++        a("Frost Breath", Field.DS, 2, 0.8, 2, "0.8× damage, 35% Crash (+35% if Lagged)") { it.copy(stun = 0.35, stunIfSlow = 0.35) },
++        a("Depth Charge", Field.DS, 1, 1.0, 1, "1× damage, +40% vs Lagged") { it.copy(vsSlow = 0.40) },
++        Skill("Bubble Barrier", Field.DS, 1, SkillKind.ALLY, range = 3, shield = 0.25, description = "One ally within 3: Firewall 25%"),
++        a("Abyss Drain", Field.DS, 3, 1.4, 2, "1.4× damage, heals 30% of damage") { it.copy(lifesteal = 0.30) },
 +        // Wind Guardians
-+        a("Gust", Field.WG, 1, 0.9, 3, "0.9× damage, range 3, pushes 1") { it.copy(push = 1) },
-+        a("Hit and Run", Field.WG, 1, 1.1, 1, "1.1× damage, then moves 2 away, no counter") { it.copy(retreat = 2, noCounter = true) },
++        a("Wing Gust", Field.WG, 1, 0.9, 3, "0.9× damage, range 3, pushes 1") { it.copy(push = 1) },
++        a("Strafe", Field.WG, 1, 1.1, 1, "1.1× damage, then moves 2 away, no counter") { it.copy(retreat = 2, noCounter = true) },
 +        a("Feather Storm", Field.WG, 2, 0.8, 3, "0.8× damage to the target and enemies next to it") { it.copy(area = Area.SPLASH) },
-+        Skill("Evasion Up", Field.WG, 1, SkillKind.SELF, buffEva = 20.0, buffTurns = 2, description = "Self: +20 EVA for 2 turns"),
++        Skill("Wind Veil", Field.WG, 1, SkillKind.SELF, buffEva = 20.0, buffTurns = 2, description = "+20 EVA for 2 turns"),
 +        a("Sky Dive", Field.WG, 2, 1.3, 4, "1.3× damage, range 4"),
-+        Skill("Tailwind Aura", Field.WG, 2, SkillKind.TEAM, range = 3, buffMove = 1, buffSpd = 10.0, buffTurns = 2, description = "Allies within 3: +1 move, +10 SPD for 2 turns"),
-+        a("Cyclone", Field.WG, 3, 1.6, 3, "1.6× damage, range 3, Slow") { it.copy(slow = 1.0) },
++        Skill("Jet Stream", Field.WG, 2, SkillKind.TEAM, range = 3, buffMove = 1, buffSpd = 10.0, buffTurns = 2, description = "Allies within 3: +1 move, +10 SPD for 2 turns"),
++        a("Sonic Cyclone", Field.WG, 3, 1.6, 3, "1.6× damage, range 3, Lag") { it.copy(slow = 1.0) },
 +        // Metal Empire
-+        Skill("Overdrive", Field.ME, 1, SkillKind.SELF, overclock = 2, description = "Self: +2 Overclock stacks"),
++        Skill("Overdrive", Field.ME, 1, SkillKind.SELF, overclock = 2, description = "+2 Overclock stacks"),
 +        a("Plasma Cannon", Field.ME, 2, 1.2, 3, "1.2× damage, range 3, ignores 50% DEF") { it.copy(pierce = 0.5) },
-+        Skill("Armor Up", Field.ME, 1, SkillKind.SELF, shield = 0.25, description = "Self: Shield 25%"),
-+        a("Missile Salvo", Field.ME, 2, 0.6, 3, "0.6× damage to 3 random enemies") { it.copy(area = Area.MULTI3) },
-+        Skill("Lock-On", Field.ME, 1, SkillKind.SELF, sureHit = true, buffCrit = 50.0, buffTurns = 1, description = "Self: next attack can't miss, +50 CRIT"),
-+        Skill("Recharge", Field.ME, 0, SkillKind.SELF, energy = 2, description = "Self: +2 Energy"),
-+        a("Giga Blaster", Field.ME, 3, 2.2, 2, "2.2× damage, Slows itself") { it.copy(selfSlow = true) },
++        Skill("Chrome Plating", Field.ME, 1, SkillKind.SELF, shield = 0.25, description = "Firewall 25%"),
++        a("Missile Barrage", Field.ME, 2, 0.6, 3, "0.6× damage to 3 random enemies") { it.copy(area = Area.MULTI3) },
++        Skill("Target Lock", Field.ME, 1, SkillKind.SELF, sureHit = true, buffCrit = 50.0, buffTurns = 1, description = "Next attack can't miss, +50 CRIT"),
++        Skill("Power Cycle", Field.ME, 0, SkillKind.SELF, energy = 2, description = "+2 Energy"),
++        a("Giga Blaster", Field.ME, 3, 2.2, 2, "2.2× damage, Lags itself") { it.copy(selfSlow = true) },
 +        // Nightmare Soldiers
-+        a("Vampire Bite", Field.NSO, 1, 1.0, 1, "1× damage, heals 35% of damage") { it.copy(lifesteal = 0.35) },
-+        a("Hex", Field.NSO, 1, 0.0, 3, "Weaken and Curse, range 3") { it.copy(weaken = 1.0, curse = 1.0) },
-+        a("Nightmare", Field.NSO, 2, 0.6, 2, "0.6× damage, 40% Stun") { it.copy(stun = 0.40) },
-+        a("Soul Siphon", Field.NSO, 2, 1.2, 1, "1.2× damage, heals 30%, +50% vs Cursed") { it.copy(lifesteal = 0.30, vsCurse = 0.50) },
-+        Skill("Fear", Field.NSO, 1, SkillKind.FOES, range = 1, weaken = 1.0, push = 1, description = "Adjacent enemies: Weaken, pushes 1"),
++        a("Data Leech", Field.NSO, 1, 1.0, 1, "1× damage, heals 35% of damage") { it.copy(lifesteal = 0.35) },
++        a("Hex Code", Field.NSO, 1, 0.0, 3, "Throttle and Glitch, range 3") { it.copy(weaken = 1.0, curse = 1.0) },
++        a("Night Terror", Field.NSO, 2, 0.6, 2, "0.6× damage, 40% Crash") { it.copy(stun = 0.40) },
++        a("Data Siphon", Field.NSO, 2, 1.2, 1, "1.2× damage, heals 30%, +50% vs Glitched") { it.copy(lifesteal = 0.30, vsCurse = 0.50) },
++        Skill("Terrorize", Field.NSO, 1, SkillKind.FOES, range = 1, weaken = 1.0, push = 1, description = "Adjacent enemies: Throttle, pushes 1"),
 +        a("Shadow Step", Field.NSO, 1, 0.9, 4, "0.9× damage, range 4, no counter") { it.copy(noCounter = true) },
-+        a("Death Claw", Field.NSO, 3, 1.8, 1, "1.8× damage, double below 25% HP") { it.copy(execute = 0.25) },
++        a("Delete Claw", Field.NSO, 3, 1.8, 1, "1.8× damage, double below 25% HP") { it.copy(execute = 0.25) },
 +        // Virus Busters
-+        Skill("Holy Light", Field.VB, 1, SkillKind.ALLY, range = 3, heal = 0.22, description = "One ally within 3: heal 22%"),
-+        Skill("Cleanse", Field.VB, 1, SkillKind.ALLY, range = 3, cleanse = true, shield = 0.10, description = "One ally within 3: remove negative effects, Shield 10%"),
-+        a("Smite", Field.VB, 1, 1.2, 1, "1.2× damage, +30% vs Virus") { it.copy(vsVirus = 0.30) },
-+        Skill("Barrier", Field.VB, 2, SkillKind.TEAM, range = 2, shield = 0.20, description = "Allies within 2: Shield 20%"),
-+        Skill("Revive Spark", Field.VB, 3, SkillKind.REVIVE, range = 3, revive = 0.30, description = "Revive a knocked-out ally at 30% HP, once per battle"),
-+        a("Judgment", Field.VB, 2, 1.2, 3, "1.2× damage, range 3, Weaken") { it.copy(weaken = 1.0) },
-+        Skill("Sanctuary", Field.VB, 2, SkillKind.TEAM, range = 1, regen = true, buffRes = 20.0, buffTurns = 3, description = "Adjacent allies and self: Regen, +20 RES"),
++        Skill("Restore", Field.VB, 1, SkillKind.ALLY, range = 3, heal = 0.22, description = "One ally within 3: heal 22%"),
++        Skill("Debug", Field.VB, 1, SkillKind.ALLY, range = 3, cleanse = true, shield = 0.10, description = "One ally within 3: remove negative effects, Firewall 10%"),
++        a("Purge", Field.VB, 1, 1.2, 1, "1.2× damage, +30% vs Virus") { it.copy(vsVirus = 0.30) },
++        Skill("Firewall", Field.VB, 2, SkillKind.TEAM, range = 2, shield = 0.20, description = "Allies within 2: Firewall 20%"),
++        Skill("System Restore", Field.VB, 3, SkillKind.REVIVE, range = 3, revive = 0.30, description = "Revive a knocked-out ally at 30% HP, once per battle"),
++        a("Holy Judgment", Field.VB, 2, 1.2, 3, "1.2× damage, range 3, Throttle") { it.copy(weaken = 1.0) },
++        Skill("Sanctuary", Field.VB, 2, SkillKind.TEAM, range = 1, regen = true, buffRes = 20.0, buffTurns = 3, description = "Adjacent allies and self: Repair, +20 RES"),
 +        // Jungle Troopers
-+        a("Venom Sting", Field.JT, 1, 0.8, 1, "0.8× damage, +2 Poison") { it.copy(poison = 2) },
-+        a("Web Trap", Field.JT, 1, 0.5, 3, "0.5× damage, range 3, Slow, +1 Poison") { it.copy(slow = 1.0, poison = 1) },
-+        a("Spore Cloud", Field.JT, 2, 0.3, 3, "0.3× damage to the target and enemies next to it, +1 Poison") { it.copy(area = Area.SPLASH, poison = 1) },
-+        a("Toxic Burst", Field.JT, 2, 0.5, 2, "0.5× damage, +12% max HP per Poison stack, removes Poison") { it.copy(consumePoison = 0.12) },
-+        Skill("Thorn Armor", Field.JT, 1, SkillKind.SELF, thorns = 0.10, buffTurns = 3, description = "Self for 3 turns: attackers take 10% and get Poisoned"),
-+        a("Swarm Call", Field.JT, 2, 0.4, 2, "0.4× damage, 4 hits, 25% Poison per hit") { it.copy(area = Area.HITS4, poisonChance = 0.25) },
-+        Skill("Plague", Field.JT, 3, SkillKind.FOES, range = 12, poison = 3, description = "All enemies: +3 Poison"),
++        a("Infect Sting", Field.JT, 1, 0.8, 1, "0.8× damage, +2 Malware") { it.copy(poison = 2) },
++        a("Web Trap", Field.JT, 1, 0.5, 3, "0.5× damage, range 3, Lag, +1 Malware") { it.copy(slow = 1.0, poison = 1) },
++        a("Spore Cloud", Field.JT, 2, 0.3, 3, "0.3× damage to the target and enemies next to it, +1 Malware") { it.copy(area = Area.SPLASH, poison = 1) },
++        a("Payload", Field.JT, 2, 0.5, 2, "0.5× damage, +12% max HP per Malware stack, removes Malware") { it.copy(consumePoison = 0.12) },
++        Skill("Thorn Armor", Field.JT, 1, SkillKind.SELF, thorns = 0.10, buffTurns = 3, description = "For 3 turns: attackers take 10% and get Infected"),
++        a("Bug Swarm", Field.JT, 2, 0.4, 2, "0.4× damage, 4 hits, 25% Malware per hit") { it.copy(area = Area.HITS4, poisonChance = 0.25) },
++        Skill("Outbreak", Field.JT, 3, SkillKind.FOES, range = 12, poison = 3, description = "All enemies: +3 Malware"),
 +        // Generic
 +        Skill("Quick Strike", null, 0, SkillKind.ATTACK, 0.9, 1, noCounter = true, generic = true, description = "0.9× damage, no counter"),
-+        Skill("Guard Break", null, 1, SkillKind.ATTACK, 1.2, 1, breakShield = true, generic = true, description = "1.2× damage, breaks Shields"),
-+        Skill("First Aid", null, 1, SkillKind.SELF, heal = 0.12, generic = true, description = "Self: heal 12%"),
-+        Skill("Focus Strike", null, 1, SkillKind.ATTACK, 1.2, 1, sureHit = true, generic = true, description = "1.2× damage, can't miss")
++        Skill("Firewall Break", null, 1, SkillKind.ATTACK, 1.2, 1, breakShield = true, generic = true, description = "1.2× damage, breaks Firewalls"),
++        Skill("Patch", null, 1, SkillKind.SELF, heal = 0.12, generic = true, description = "Heal 12%"),
++        Skill("Focus Strike", null, 1, SkillKind.ATTACK, 1.2, 1, sureHit = true, generic = true, description = "1.2× damage, can't miss"),
++
++        // Buffs anyone can learn
++        Skill("Power Up", null, 1, SkillKind.SELF, buffDmg = 0.25, buffTurns = 2, generic = true, description = "+25% damage for 2 turns"),
++        Skill("Armor Mode", null, 1, SkillKind.SELF, selfDef = 0.50, buffTurns = 2, generic = true, description = "+50% DEF for 2 turns"),
++        Skill("Hyper Focus", null, 1, SkillKind.SELF, buffCrit = 30.0, buffTurns = 2, generic = true, description = "+30 CRIT for 2 turns"),
++        Skill("Accel Mode", null, 1, SkillKind.SELF, buffMove = 1, buffSpd = 8.0, buffTurns = 2, generic = true, description = "+1 move, +8 SPD for 2 turns"),
++        Skill("Battle Cry", null, 2, SkillKind.TEAM, range = 2, buffDmg = 0.15, buffSpd = 5.0, buffTurns = 2, generic = true,
++            description = "You and allies within 2: +15% damage, +5 SPD for 2 turns"),
++
++        // Area attacks (one per Field)
++        a("Tail Sweep", Field.DR, 1, 0.9, 1, "0.9× damage to the target and every enemy next to you") { it.copy(area = Area.CLEAVE) },
++        a("Gaia Quake", Field.NSP, 3, 0.7, 2, "0.7× damage to every enemy within 2 of you, 30% Lag") { it.copy(area = Area.NOVA, slow = 0.3) },
++        a("Maelstrom", Field.DS, 2, 0.8, 1, "0.8× damage to every enemy next to you, 50% Lag") { it.copy(area = Area.NOVA, slow = 0.5) },
++        a("Razor Wind", Field.WG, 2, 0.9, 4, "0.9× damage to every enemy in a straight line, range 4") { it.copy(area = Area.LINE) },
++        a("Ion Beam", Field.ME, 2, 1.0, 3, "1× damage to every enemy in a straight line, range 3, ignores 30% DEF") { it.copy(area = Area.LINE, pierce = 0.3) },
++        a("Shadow Sweep", Field.NSO, 2, 1.0, 1, "1× damage to the target and every enemy next to you, 50% Glitch") { it.copy(area = Area.CLEAVE, curse = 0.5) },
++        a("Holy Burst", Field.VB, 2, 0.9, 1, "0.9× damage to every enemy next to you, +30% vs Virus") { it.copy(area = Area.NOVA, vsVirus = 0.30) },
++        a("Thorn Whip", Field.JT, 1, 0.7, 1, "0.7× damage to the target and every enemy next to you, +1 Malware") { it.copy(area = Area.CLEAVE, poison = 1) },
++
++        // Melee auras (one per Field): last 3 turns, reach 1 tile around the user
++        aura("Heat Aura", Field.DR, 2, AuraKind.FLAME, 0.06, "Aura: enemies next to you take 6% max HP at the start of their turn"),
++        aura("Alpha Aura", Field.NSP, 2, AuraKind.MIGHT, 0.20, "Aura: you and allies next to you deal +20% damage"),
++        aura("Glacier Aura", Field.DS, 2, AuraKind.FROST, 1.0, "Aura: enemies next to you get Lagged at the start of their turn"),
++        aura("Gale Aura", Field.WG, 1, AuraKind.GALE, 12.0, "Aura: you and allies next to you get +12 EVA"),
++        aura("Chrome Aura", Field.ME, 2, AuraKind.WARD, 0.20, "Aura: you and allies next to you take −20% damage"),
++        aura("Nightmare Aura", Field.NSO, 1, AuraKind.DREAD, 0.15, "Aura: enemies next to you deal −15% damage"),
++        aura("Holy Aura", Field.VB, 2, AuraKind.MEND, 0.04, "Aura: you and allies next to you heal 4% each turn"),
++        aura("Miasma", Field.JT, 2, AuraKind.MIASMA, 1.0, "Aura: enemies next to you get +1 Malware at the start of their turn")
 +    )
 +
 +    fun byName(name: String): Skill? = POOL.firstOrNull { it.name == name }
@@ -974,28 +1036,28 @@ index 0000000..5106596
 +    fun fieldPassive(field: Field?): String = when (field) {
 +        Field.DR -> "Rage: up to +50% damage as HP drops"
 +        Field.NSP -> "Pack Hunt: +25% damage per ally within 2 of the target; +10% HP"
-+        Field.DS -> "Tide: heals 2% each turn; +15% vs Slowed"
++        Field.DS -> "Tide: heals 2% each turn; +15% vs Lagged"
 +        Field.WG -> "Tailwind: +1 move, +1 range on ranged skills, +8 EVA"
-+        Field.ME -> "Overclock: starts with a Shield; +2% damage each turn"
-+        Field.NSO -> "Drain: heals 15% of damage; attacks may Curse"
++        Field.ME -> "Overclock: starts with a Firewall; +2% damage each turn"
++        Field.NSO -> "Drain: heals 15% of damage; attacks may Glitch"
 +        Field.VB -> "Purify: heals the weakest ally a little each turn; +10% vs Virus"
-+        Field.JT -> "Swarm: attacks Poison; +15% vs Poisoned"
++        Field.JT -> "Swarm: attacks spread Malware; +15% vs Infected"
 +        null -> "No Field passive"
 +    } + " (stronger at higher stages)"
 +
 +    fun attrTrait(attr: Attr): String = when (attr) {
-+        Attr.VACCINE -> "Firewall: starts with an 8% Shield"
++        Attr.VACCINE -> "Antivirus: starts with an 8% Firewall"
 +        Attr.VIRUS -> "Corrupt: ignores 20% of DEF"
-+        Attr.DATA -> "Analyze: +5 hit and +5% damage per repeat hit"
++        Attr.DATA -> "Scan: +5 hit and +5% damage per repeat hit"
 +        Attr.FREE -> "Adapt: first attack counts as advantaged"
 +    }
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt
 new file mode 100644
-index 0000000..9e155ed
+index 0000000..d08b129
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/roguelike/RogueEngine.kt
-@@ -0,0 +1,674 @@
+@@ -0,0 +1,812 @@
 +package com.github.nacabaro.vbhelper.roguelike
 +
 +import kotlin.math.abs
@@ -1067,6 +1129,8 @@ index 0000000..9e155ed
 +    var revived = false
 +    var sureHit = false
 +    var acted = false
++    var aura: Skill? = null
++    var auraTurns = 0
 +
 +    val alive get() = hp > 0
 +    fun buffSum(sel: (Buff) -> Double) = buffs.sumOf(sel)
@@ -1081,6 +1145,20 @@ index 0000000..9e155ed
 +            val m = stage.move + (if (spec.field == Field.WG) 1 else 0) + buffs.sumOf { it.move }
 +            return max(1, m - if (Status.SLOW in status) Tuning.SLOW_MOVE else 0)
 +        }
++
++    /** Short text for active buffs, e.g. "+25% dmg (2)". */
++    fun buffText(): List<String> = buffs.map { b ->
++        listOfNotNull(
++            b.dmg.takeIf { it != 0.0 }?.let { "${if (it > 0) "+" else ""}${Math.round(it * 100)}% dmg" },
++            b.def.takeIf { it != 0.0 }?.let { "${if (it > 0) "+" else ""}${Math.round(it * 100)}% DEF" },
++            b.eva.takeIf { it != 0.0 }?.let { "+${it.toInt()} EVA" },
++            b.move.takeIf { it != 0 }?.let { "+$it move" },
++            b.spd.takeIf { it != 0.0 }?.let { "+${it.toInt()} SPD" },
++            b.crit.takeIf { it != 0.0 }?.let { "+${it.toInt()} CRIT" },
++            b.res.takeIf { it != 0.0 }?.let { "+${it.toInt()} RES" },
++            b.thorns.takeIf { it != 0.0 }?.let { "thorns" }
++        ).joinToString(", ") + " (${b.turns})"
++    }
 +
 +    fun skillRange(s: Skill): Int = s.range + if (field == Field.WG && s.range >= 2) 1 else 0
 +
@@ -1181,13 +1259,79 @@ index 0000000..9e155ed
 +
 +    /** Enemies the skill can reach when used from [from]. */
 +    fun targetsFrom(f: Fighter, from: Pos, s: Skill): List<Fighter> =
-+        side(1 - f.side).filter { it.pos.dist(from) <= f.skillRange(s) }
++        side(1 - f.side).filter {
++            it.pos.dist(from) <= f.skillRange(s) && it.pos != from &&
++                    (s.area != Area.LINE || it.pos.x == from.x || it.pos.y == from.y)
++        }
++
++    /**
++     * Every enemy an area attack hits when [f] uses [s] from [from] on [t] (the target first).
++     * MULTI3 picks at random when it lands, so this returns just the target for it.
++     */
++    fun areaTargets(f: Fighter, from: Pos, s: Skill, t: Fighter): List<Fighter> {
++        val foes = side(1 - f.side)
++        val r = f.skillRange(s)
++        val extra = when (s.area) {
++            Area.SPLASH -> foes.filter { it !== t && it.pos.dist(t.pos) == 1 }
++            Area.CLEAVE -> foes.filter { it !== t && it.pos.dist(from) == 1 }
++            Area.NOVA -> foes.filter { it !== t && it.pos.dist(from) <= r }
++            Area.LINE -> {
++                val dx = Integer.signum(t.pos.x - from.x)
++                val dy = Integer.signum(t.pos.y - from.y)
++                (1..r).mapNotNull { i -> at(Pos(from.x + dx * i, from.y + dy * i)) }
++                    .filter { it.side != f.side && it !== t }
++            }
++            else -> emptyList()
++        }
++        return listOf(t) + extra
++    }
++
++    /** Tiles an area attack covers (for highlighting). */
++    fun areaTiles(f: Fighter, from: Pos, s: Skill, t: Fighter): Set<Pos> {
++        val r = f.skillRange(s)
++        val all = (0 until W).flatMap { x -> (0 until H).map { y -> Pos(x, y) } }
++        return when (s.area) {
++            Area.SPLASH -> all.filter { it.dist(t.pos) <= 1 }.toSet()
++            Area.CLEAVE -> all.filter { it.dist(from) == 1 }.toSet() + t.pos
++            Area.NOVA -> all.filter { it.dist(from) in 1..r }.toSet()
++            Area.LINE -> {
++                val dx = Integer.signum(t.pos.x - from.x)
++                val dy = Integer.signum(t.pos.y - from.y)
++                (1..r).map { i -> Pos(from.x + dx * i, from.y + dy * i) }.filter { it.x in 0 until W && it.y in 0 until H }.toSet()
++            }
++            else -> setOf(t.pos)
++        }
++    }
++
++    // ---------------------------------------------------------------- auras
++
++    /** The strongest aura of [kind] from side [owner] that reaches [f], and who holds it. */
++    private fun auraSource(f: Fighter, owner: Int, kind: AuraKind): Fighter? =
++        side(owner).filter { h -> h.auraTurns > 0 && h.aura?.aura == kind && h.pos.dist(f.pos) <= h.aura!!.range }
++            .maxByOrNull { it.aura!!.auraValue }
++
++    private fun auraValue(f: Fighter, owner: Int, kind: AuraKind): Double =
++        auraSource(f, owner, kind)?.aura?.auraValue ?: 0.0
++
++    /** Tiles covered by active auras: true for helpful (your side's) auras, false for harmful ones. */
++    fun auraTiles(): Map<Pos, Int> {
++        val out = mutableMapOf<Pos, Int>()
++        for (h in fighters.filter { it.alive && it.auraTurns > 0 && it.aura != null }) {
++            val r = h.aura!!.range
++            for (x in 0 until W) for (y in 0 until H) {
++                val p = Pos(x, y)
++                if (p.dist(h.pos) <= r) out[p] = h.side
++            }
++        }
++        return out
++    }
 +
 +    // ---------------------------------------------------------------- damage maths
 +
 +    private fun hitChance(a: Fighter, d: Fighter): Double {
 +        var h = Tuning.HIT_BASE + Tuning.HIT_PER_ACC * (a.acc - d.acc) - d.eva
 +        if (a.attr == Attr.DATA && a.analyzeTarget == d.id) h += Tuning.ANALYZE * a.analyzeStacks
++        h -= auraValue(d, d.side, AuraKind.GALE)
 +        return h.coerceIn(Tuning.HIT_MIN, Tuning.HIT_MAX) / 100
 +    }
 +
@@ -1210,6 +1354,8 @@ index 0000000..9e155ed
 +        }
 +        if (Status.WEAKEN in a.status) m *= 1 - Tuning.WEAKEN
 +        m *= 1 + a.buffSum { it.dmg }
++        m *= 1 + auraValue(a, a.side, AuraKind.MIGHT)
++        m *= 1 - auraValue(a, 1 - a.side, AuraKind.DREAD)
 +        if (s.vsSlow > 0 && Status.SLOW in d.status) m *= 1 + s.vsSlow
 +        if (s.vsCurse > 0 && Status.CURSE in d.status) m *= 1 + s.vsCurse
 +        if (s.vsVirus > 0 && d.attr == Attr.VIRUS) m *= 1 + s.vsVirus
@@ -1225,6 +1371,7 @@ index 0000000..9e155ed
 +        val de = d.def * (1 - if (a.attr == Attr.VIRUS) Tuning.CORRUPT else 0.0) * (1 - s.pierce)
 +        var dmg = power * a.atk * 20 / (20 + de) * multiplier(a, d, s, adapt)
 +        if (d.guarding) dmg *= Tuning.GUARD
++        dmg *= 1 - auraValue(d, d.side, AuraKind.WARD)
 +        return dmg
 +    }
 +
@@ -1239,10 +1386,13 @@ index 0000000..9e155ed
 +        val total = dmg + if (doubles) dmg * Tuning.DOUBLE_POWER else 0.0
 +        val shielded = max(0.0, total - d.shield)
 +        val canCounter = s.power > 0 && !s.noCounter && from.dist(d.pos) <= 1 && Status.STUN !in d.status &&
-+                s.area == Area.SINGLE
++                (s.area == Area.SINGLE || s.area == Area.HITS4)
 +        val cDmg = if (canCounter) rawDamage(d, a, Skills.BASIC, Tuning.COUNTER_POWER, false) else 0.0
 +        val cHit = if (canCounter) hitChance(d, a) else 0.0
-+        val splash = if (s.area == Area.SPLASH) side(1 - a.side).count { it !== d && it.pos.dist(d.pos) == 1 } else 0
++        val splash = when (s.area) {
++            Area.MULTI3 -> 2
++            else -> areaTargets(a, from, s, d).size - 1
++        }
 +        a.pos = saved
 +        return Forecast(
 +            damage = Math.round(dmg).toInt(),
@@ -1316,7 +1466,7 @@ index 0000000..9e155ed
 +                applyDamage(d, a, it.thorns * dealt); tryStatus(d, a, Status.POISON)
 +            }
 +            events += BattleEvent.Hit(a.id, d.id, s.name, Math.round(dealt).toInt(), crit, !d.alive)
-+            say("${a.name} ${s.name} → ${d.name}: ${Math.round(dealt)}${if (crit) " CRIT" else ""}${if (!d.alive) ", knocked out" else ""}")
++            say("${a.name} ${s.name} → ${d.name}: ${Math.round(dealt)}${if (crit) " CRIT" else ""}${if (!d.alive) ", deleted" else ""}")
 +        }
 +        if (s.burn > 0) tryStatus(a, d, Status.BURN, s.burn)
 +        if (s.slow > 0) tryStatus(a, d, Status.SLOW, s.slow)
@@ -1373,8 +1523,9 @@ index 0000000..9e155ed
 +    private fun attack(f: Fighter, s: Skill, t: Fighter, events: MutableList<BattleEvent>) {
 +        val foes = side(1 - f.side)
 +        when (s.area) {
-+            Area.SPLASH -> (listOf(t) + foes.filter { it !== t && it.pos.dist(t.pos) == 1 })
-+                .forEach { strike(f, it, s, events, counterOk = it === t) }
++            // Area attacks never draw counters (the forecast says so too).
++            Area.SPLASH, Area.LINE, Area.CLEAVE, Area.NOVA ->
++                areaTargets(f, f.pos, s, t).forEach { strike(f, it, s, events, counterOk = false) }
 +            Area.MULTI3 -> foes.shuffled(rng).take(3).forEach { strike(f, it, s, events, counterOk = false) }
 +            Area.HITS4 -> repeat(4) { if (t.alive) strike(f, t, s, events, counterOk = false) }
 +            Area.SINGLE -> {
@@ -1418,6 +1569,11 @@ index 0000000..9e155ed
 +                events += BattleEvent.Support(f.id, s.name)
 +                return
 +            }
++            SkillKind.AURA -> {
++                f.aura = s; f.auraTurns = s.buffTurns
++                events += BattleEvent.Support(f.id, s.name); say("${f.name} raises ${s.name}")
++                return
++            }
 +            SkillKind.ATTACK -> emptyList()
 +        }
 +        for (t in targets) {
@@ -1455,12 +1611,18 @@ index 0000000..9e155ed
 +            if (f.field == Field.ME) f.overclock = min(5, f.overclock + 1)
 +            if (f.field == Field.DS) f.heal(Tuning.DS_REGEN * pm * f.maxHp)
 +            if (Status.REGEN in f.status) f.heal(Tuning.REGEN * f.maxHp)
++            auraValue(f, s, AuraKind.MEND).takeIf { it > 0 }?.let { f.heal(it * f.maxHp) }
++            auraSource(f, 1 - s, AuraKind.FLAME)?.let { h ->
++                f.hp = max(0.0, f.hp - h.aura!!.auraValue * f.maxHp); say("${f.name} is scorched by ${h.name}'s ${h.aura!!.name}")
++            }
++            auraSource(f, 1 - s, AuraKind.FROST)?.let { h -> tryStatus(h, f, Status.SLOW) }
++            auraSource(f, 1 - s, AuraKind.MIASMA)?.let { h -> tryStatus(h, f, Status.POISON, 1.0, 1) }
 +            if (Status.BURN in f.status) f.hp = max(0.0, f.hp - Tuning.BURN * f.maxHp)
 +            val p = f.status[Status.POISON] ?: 0
 +            if (p > 0) f.hp = max(0.0, f.hp - Tuning.POISON * f.maxHp * p)
-+            if (!f.alive) say("${f.name} fell to damage over time")
++            if (!f.alive) say("${f.name} was deleted by damage over time")
 +            if (Status.STUN in f.status) {
-+                f.acted = true; say("${f.name} is stunned")
++                f.acted = true; say("${f.name} crashed and skips its turn")
 +            }
 +        }
 +        checkWinner()
@@ -1484,6 +1646,10 @@ index 0000000..9e155ed
 +            }
 +            f.buffs.forEach { it.turns-- }
 +            f.buffs.removeAll { it.turns <= 0 }
++            if (f.auraTurns > 0) {
++                f.auraTurns--
++                if (f.auraTurns == 0) f.aura = null
++            }
 +            if (f.shield > 0) {
 +                f.shieldTurns--
 +                if (f.shieldTurns <= 0) f.shield = 0.0
@@ -1552,9 +1718,10 @@ index 0000000..9e155ed
 +        if (intent.targetId == null) return Choice(skill, null, reachable(e).let { if (intent.dest in it) intent.dest else e.pos })
 +        val t = byId(intent.targetId)
 +        if (!t.alive) return null
-+        val tiles = reachable(e).filter { it.dist(t.pos) <= e.skillRange(skill) }
++        val tiles = reachable(e).filter { p -> p != t.pos && p.dist(t.pos) <= e.skillRange(skill) &&
++                (skill.area != Area.LINE || p.x == t.pos.x || p.y == t.pos.y) }
 +        if (tiles.isEmpty()) return null
-+        return Choice(skill, t, bestTile(e, skill, t, tiles))
++        return Choice(skill, t, if (intent.dest in tiles) intent.dest else bestTile(e, skill, t, tiles))
 +    }
 +
 +    private fun bestTile(u: Fighter, s: Skill, t: Fighter, tiles: List<Pos>): Pos {
@@ -1571,13 +1738,13 @@ index 0000000..9e155ed
 +        return rawDamage(a, d, s, s.power, false) * th * (1 + a.crit / 100 * (Tuning.CRIT_DMG - 1))
 +    }
 +
-+    private fun scoreAttack(u: Fighter, s: Skill, t: Fighter): Double {
++    private fun scoreAttack(u: Fighter, s: Skill, t: Fighter, from: Pos = u.pos): Double {
 +        val foes = side(1 - u.side)
 +        val hit = when (s.area) {
-+            Area.SPLASH -> listOf(t) + foes.filter { it !== t && it.pos.dist(t.pos) == 1 }
 +            Area.MULTI3 -> foes.take(3)
 +            Area.HITS4 -> List(4) { t }
 +            Area.SINGLE -> listOf(t)
++            else -> areaTargets(u, from, s, t)
 +        }
 +        var v = 0.0
 +        for (h in hit) {
@@ -1611,6 +1778,10 @@ index 0000000..9e155ed
 +                if (s.energy > 0 && u.energy <= 1) v += 0.08
 +                if (s.sureHit && !u.sureHit) v += 0.10
 +                if (s.thorns > 0 && u.buffs.none { it.thorns > 0 } && foes.any { it.pos.dist(u.pos) <= 2 }) v += 0.10
++                val foeNear = foes.any { it.pos.dist(u.pos) <= 1 + it.move }
++                if (s.selfDef > 0 && u.buffs.none { it.def > 0 } && foeNear) v += 0.10
++                if (s.buffCrit > 0 && !s.sureHit && u.buffs.none { it.crit > 0 }) v += 0.08
++                if ((s.buffMove > 0 || s.buffSpd > 0) && u.buffs.none { it.move > 0 }) v += 0.05
 +            }
 +            SkillKind.ALLY -> {
 +                if (s.heal > 0) v += min(s.heal, missing) * 1.5
@@ -1622,6 +1793,7 @@ index 0000000..9e155ed
 +                if (s.regen) v += 0.18 * allies.sumOf { 1 - it.hp / it.maxHp }
 +                if (s.buffDmg > 0 && u.buffs.none { it.dmg > 0 }) v += 0.07 * allies.size
 +                if (s.buffMove > 0) v += 0.03 * allies.size
++                if (s.buffSpd > 0 && s.buffMove == 0) v += 0.02 * allies.count { it.pos.dist(u.pos) <= s.range }
 +            }
 +            SkillKind.FOES -> {
 +                val near = foes.filter { it.pos.dist(u.pos) <= s.range + u.move }
@@ -1629,6 +1801,19 @@ index 0000000..9e155ed
 +                if (s.poison > 0) v += 0.05 * s.poison * foes.size
 +            }
 +            SkillKind.REVIVE -> if (fighters.any { it.side == u.side && !it.alive && !it.revived }) v += 0.6
++            SkillKind.AURA -> if (u.auraTurns <= 1) {
++                val k = s.aura!!
++                if (k.ally) {
++                    val near = allies.count { it.pos.dist(u.pos) <= 2 }
++                    v += when (k) {
++                        AuraKind.MEND -> 0.12 * allies.filter { it.pos.dist(u.pos) <= 2 }.sumOf { 1 - it.hp / it.maxHp } + 0.04
++                        else -> 0.06 + 0.05 * near
++                    }
++                } else {
++                    val near = foes.count { it.pos.dist(u.pos) <= 1 + u.move }
++                    if (near > 0) v += 0.06 + 0.07 * min(near, 3)
++                }
++            }
 +            SkillKind.ATTACK -> {}
 +        }
 +        return v
@@ -1646,15 +1831,30 @@ index 0000000..9e155ed
 +            if (!canUse(u, s)) continue
 +            if (s.kind == SkillKind.ATTACK) {
 +                for (t in foes) {
-+                    val cand = tiles.filter { it.dist(t.pos) <= u.skillRange(s) }
++                    val cand = tiles.filter { p -> p != t.pos && p.dist(t.pos) <= u.skillRange(s) &&
++                            (s.area != Area.LINE || p.x == t.pos.x || p.y == t.pos.y) }
 +                    if (cand.isEmpty()) continue
-+                    val sc = scoreAttack(u, s, t) - 0.04 * s.cost
-+                    if (sc > best) { best = sc; choice = Choice(s, t, bestTile(u, s, t, cand)) }
++                    if (s.area == Area.LINE || s.area == Area.CLEAVE || s.area == Area.NOVA) {
++                        // the tile decides who else gets hit, so score every tile
++                        val saved = u.pos
++                        var bestP: Pos? = null; var bestSc = -1.0
++                        for (p in cand) {
++                            u.pos = p
++                            val sc = scoreAttack(u, s, t, p)
++                            if (sc > bestSc) { bestSc = sc; bestP = p }
++                        }
++                        u.pos = saved
++                        val sc = bestSc - 0.04 * s.cost
++                        if (sc > best && bestP != null) { best = sc; choice = Choice(s, t, bestP) }
++                    } else {
++                        val sc = scoreAttack(u, s, t) - 0.04 * s.cost
++                        if (sc > best) { best = sc; choice = Choice(s, t, bestTile(u, s, t, cand)) }
++                    }
 +                }
 +            } else {
 +                val sc = scoreSupport(u, s) - 0.04 * s.cost
 +                if (sc > best) {
-+                    val dest = if (s.kind == SkillKind.FOES) {
++                    val dest = if (s.kind == SkillKind.FOES || (s.kind == SkillKind.AURA && s.aura?.ally == false)) {
 +                        val p = tiles.maxBy { p -> foes.count { it.pos.dist(p) <= s.range } }
 +                        if (foes.none { it.pos.dist(p) <= s.range }) continue
 +                        p
@@ -3893,10 +4093,18 @@ index 52b7460..de35347 100644
      }
  
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/settingsScreen/controllers/CardImportController.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/settingsScreen/controllers/CardImportController.kt
-index 1626405..5ad5b3e 100644
+index 1626405..e082ec2 100644
 --- a/app/src/main/java/com/github/nacabaro/vbhelper/screens/settingsScreen/controllers/CardImportController.kt
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/settingsScreen/controllers/CardImportController.kt
-@@ -20,7 +20,17 @@ class CardImportController(
+@@ -6,6 +6,7 @@ import com.github.cfogrady.vb.dim.card.DimCard
+ import com.github.cfogrady.vb.dim.card.DimReader
+ import com.github.cfogrady.vbnfc.data.NfcCharacter
+ import com.github.nacabaro.vbhelper.database.AppDatabase
++import com.github.nacabaro.vbhelper.domain.card.Background
+ import com.github.nacabaro.vbhelper.domain.card.Card
+ import com.github.nacabaro.vbhelper.domain.card.CardCharacter
+ import com.github.nacabaro.vbhelper.domain.card.CardProgress
+@@ -20,7 +21,17 @@ class CardImportController(
      ) {
          val dimReader = DimReader()
          val card = dimReader.readCard(fileReader, false)
@@ -3914,12 +4122,36 @@ index 1626405..5ad5b3e 100644
          val cardModel = Card(
              cardId = card.header.dimId,
              logo = card.spriteData.sprites[0].pixelData,
-@@ -44,6 +54,8 @@ class CardImportController(
+@@ -37,6 +48,8 @@ class CardImportController(
+ 
+         updateCardProgress(cardId = cardId)
+ 
++        saveBackground(cardId, card)
++
+         importCharacterData(cardId, card)
+ 
+         importEvoData(cardId, card)
+@@ -44,6 +57,23 @@ class CardImportController(
          importAdventureMissions(cardId, card)
  
          importCardFusions(cardId, card)
 +
 +        return cardId
++    }
++
++    /** Saves the card's background art (sprite 1 on both DIM and BE cards) if it isn't saved yet. */
++    suspend fun saveBackground(cardId: Long, card: com.github.cfogrady.vb.dim.card.Card<*, *, *, *, *, *>) {
++        try {
++            val sprites = card.spriteData.sprites
++            if (sprites.size < 2) return
++            val dao = database.tacticsDao()
++            if (dao.countBackgrounds(cardId) > 0) return
++            val bg = sprites[1]
++            dao.insertBackground(Background(id = 0, cardId = cardId, background = bg.pixelData,
++                backgroundWidth = bg.width, backgroundHeight = bg.height))
++        } catch (e: Exception) {
++            Log.w("CardImport", "Could not save the card background: ${e.message}")
++        }
      }
  
      private fun updateCardProgress(
@@ -4040,10 +4272,10 @@ index cc9d3d0..bd87026 100644
                          NavigationItems.Scan.route.replace(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 new file mode 100644
-index 0000000..85c7795
+index 0000000..9c0cd8b
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
-@@ -0,0 +1,783 @@
+@@ -0,0 +1,849 @@
 +package com.github.nacabaro.vbhelper.screens.tactics
 +
 +import androidx.compose.foundation.BorderStroke
@@ -4065,6 +4297,11 @@ index 0000000..85c7795
 +import androidx.compose.foundation.layout.padding
 +import androidx.compose.foundation.layout.size
 +import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.Brush
++import com.github.nacabaro.vbhelper.domain.card.Background
++import com.github.nacabaro.vbhelper.roguelike.Area
 +import androidx.compose.foundation.rememberScrollState
 +import androidx.compose.foundation.verticalScroll
 +import androidx.compose.material3.Button
@@ -4130,7 +4367,7 @@ index 0000000..85c7795
 +
 +private sealed interface Mode {
 +    data object Setup : Mode
-+    data class Fight(val battle: TacticsBattle, val frames: Map<Long, Frames>) : Mode
++    data class Fight(val battle: TacticsBattle, val frames: Map<Long, Frames>, val background: Background?) : Mode
 +}
 +
 +/**
@@ -4158,8 +4395,8 @@ index 0000000..85c7795
 +                .padding(horizontal = 12.dp)
 +        ) {
 +            when (val m = mode) {
-+                is Mode.Setup -> Setup(repo, characterId) { battle, frames -> mode = Mode.Fight(battle, frames) }
-+                is Mode.Fight -> Fight(m.battle, m.frames, onDone = { mode = Mode.Setup })
++                is Mode.Setup -> Setup(repo, characterId) { battle, frames, bg -> mode = Mode.Fight(battle, frames, bg) }
++                is Mode.Fight -> Fight(m.battle, m.frames, m.background, onDone = { mode = Mode.Setup })
 +            }
 +        }
 +    }
@@ -4172,7 +4409,7 @@ index 0000000..85c7795
 +private fun Setup(
 +    repo: TacticsRepository,
 +    leaderId: Long,
-+    onStart: (TacticsBattle, Map<Long, Frames>) -> Unit
++    onStart: (TacticsBattle, Map<Long, Frames>, Background?) -> Unit
 +) {
 +    val application = LocalContext.current.applicationContext as VBHelper
 +    val storage = remember { StorageRepository(application.container.db) }
@@ -4238,7 +4475,7 @@ index 0000000..85c7795
 +                    Text(Skills.fieldPassive(repo.field(f)), style = MaterialTheme.typography.bodySmall)
 +                    Text(Skills.attrTrait(repo.attr(f.attribute)), style = MaterialTheme.typography.bodySmall)
 +                    Text("Learned skills (${chosen.size}/2):", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 6.dp))
-+                    Text("Every Digimon also has Attack (free, range 1) and Signature (3 Energy, range 2, no counter).",
++                    Text("Every Digimon also has Attack (free, range 1) and Special Move (3 Energy, range 2, no counter).",
 +                        style = MaterialTheme.typography.bodySmall)
 +                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
 +                        Skills.poolFor(repo.field(f)).forEach { s ->
@@ -4297,7 +4534,8 @@ index 0000000..85c7795
 +                        val enemySpecs = foes.mapIndexed { i, (_, s) -> s.copy(key = -(i + 1).toLong()) }
 +                        val enemyFrames = foes.mapIndexed { i, (f, _) -> -(i + 1).toLong() to Frames(f) }.toMap()
 +                        DebugLog.i("Tactics", "Test fight: ${team.joinToString { it.name }} vs ${enemySpecs.joinToString { it.name }} (area ${area + 1}, ${kind.label})")
-+                        onStart(TacticsBattle(team, enemySpecs), members.associate { it.unitKey to Frames(it) } + enemyFrames)
++                        val bg = try { repo.background(cardId!!) } catch (e: Exception) { null }
++                        onStart(TacticsBattle(team, enemySpecs), members.associate { it.unitKey to Frames(it) } + enemyFrames, bg)
 +                    } catch (e: Exception) {
 +                        DebugLog.e("Tactics", "Could not start the test fight", e)
 +                        error = "Could not start: ${e.message}"
@@ -4327,14 +4565,18 @@ index 0000000..85c7795
 +    val cost = if (s.cost == 0) "free" else "${s.cost} Energy"
 +    val range = when (s.kind) {
 +        SkillKind.SELF -> "self"
-+        SkillKind.ATTACK -> "range ${s.range}"
++        SkillKind.ATTACK -> "range ${s.range}" + when (s.area) {
++            Area.LINE -> " · line"; Area.CLEAVE -> " · cleave"; Area.NOVA -> " · area"
++            Area.SPLASH -> " · splash"; Area.MULTI3 -> " · 3 random"; else -> ""
++        }
++        SkillKind.AURA -> "aura, reach ${s.range}"
 +        else -> "within ${s.range}"
 +    }
 +    return "$cost · $range"
 +}
 +
 +@Composable
-+private fun Fight(battle: TacticsBattle, frames: Map<Long, Frames>, onDone: () -> Unit) {
++private fun Fight(battle: TacticsBattle, frames: Map<Long, Frames>, background: Background?, onDone: () -> Unit) {
 +    val scope = rememberCoroutineScope()
 +    var tick by remember { mutableIntStateOf(0) }
 +    var step by remember { mutableStateOf<Step>(Step.Idle) }
@@ -4420,14 +4662,14 @@ index 0000000..85c7795
 +            }
 +        }
 +
-+        Board(battle, frames, step, poses, popups, frame, tick) { pos -> if (!busy && winner == null) step = onTap(battle, step, pos) }
++        Board(battle, frames, background, step, poses, popups, frame, tick) { pos -> if (!busy && winner == null) step = onTap(battle, step, pos) }
 +
 +        IntentList(battle)
 +
 +        if (winner != null) {
 +            Card(Modifier.fillMaxWidth()) {
 +                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-+                    Text(if (winner == TacticsBattle.PLAYER) "Your team won in ${battle.round} rounds." else "Your team was knocked out.",
++                    Text(if (winner == TacticsBattle.PLAYER) "Your team won in ${battle.round} rounds." else "Your team was deleted.",
 +                        style = MaterialTheme.typography.titleMedium)
 +                    Text("This is a test fight: no rewards or records change yet. Tell Claude what felt off.", style = MaterialTheme.typography.bodySmall)
 +                    Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Back to setup") }
@@ -4441,7 +4683,7 @@ index 0000000..85c7795
 +                        if (s.kind == SkillKind.ATTACK) {
 +                            val f = battle.byId(st.unit)
 +                            val targets = battle.targetsFrom(f, st.dest, s)
-+                            step = if (targets.size == 1) Step.Confirm(f.id, st.dest, s, targets[0].id, battle.forecast(f, st.dest, s, targets[0]))
++                            step = if (targets.size == 1 || (s.area == Area.NOVA && targets.isNotEmpty())) Step.Confirm(f.id, st.dest, s, targets[0].id, battle.forecast(f, st.dest, s, targets[0]))
 +                            else Step.Targeting(st.unit, st.dest, s)
 +                        } else doAction(st.unit, st.dest, s, null)
 +                    }
@@ -4521,7 +4763,7 @@ index 0000000..85c7795
 +            val f = battle.byId(step.unit)
 +            when {
 +                // tapping another enemy in range of the same skill switches the target
-+                enemy != null && enemy.pos.dist(step.dest) <= f.skillRange(step.skill) ->
++                enemy != null && enemy in battle.targetsFrom(f, step.dest, step.skill) ->
 +                    Step.Confirm(f.id, step.dest, step.skill, enemy.id, battle.forecast(f, step.dest, step.skill, enemy))
 +                enemy != null -> attack(f, step.dest, enemy, step)
 +                pos in battle.reachable(f) -> Step.Moved(f.id, pos)
@@ -4536,6 +4778,7 @@ index 0000000..85c7795
 +private fun Board(
 +    battle: TacticsBattle,
 +    frames: Map<Long, Frames>,
++    background: Background?,
 +    step: Step,
 +    poses: Map<Int, Pose>,
 +    popups: Map<Int, String>,
@@ -4568,11 +4811,38 @@ index 0000000..85c7795
 +        }
 +        else -> emptySet()
 +    }
++    // tiles an area attack will also cover, shown in orange
++    val splashTiles: Set<Pos> = if (step is Step.Confirm && step.skill.area != Area.SINGLE && step.skill.area != Area.HITS4)
++        battle.areaTiles(battle.byId(step.unit), step.dest, step.skill, battle.byId(step.target)) else emptySet()
++    val auraTiles = battle.auraTiles()
 +    val intended: Set<Int> = battle.intents.mapNotNull { it.targetId }.toSet()
 +    val letters = battle.fighters.filter { it.side == TacticsBattle.PLAYER }.mapIndexed { i, f -> f.id to "ABC"[i % 3] }.toMap()
 +
-+    BoxWithConstraints(Modifier.fillMaxWidth()) {
++    val context = LocalContext.current
++    val bgImage = remember(background?.id) {
++        background?.let {
++            try { BitmapData(it.background, it.backgroundWidth, it.backgroundHeight).getImageBitmap(context, 1, false).imageBitmap }
++            catch (e: Exception) { null }
++        }
++    }
++    val shape = RoundedCornerShape(14.dp)
++    Column(Modifier.fillMaxWidth()) {
++    BoxWithConstraints(
++        Modifier
++            .fillMaxWidth()
++            .clip(shape)
++            .background(Brush.verticalGradient(listOf(Color(0xFF1A1030), Color(0xFF0B1424))))
++            .border(1.dp, Color(0x669FB4FF), shape)
++    ) {
 +        val cell = maxWidth / TacticsBattle.W
++        if (bgImage != null) {
++            // the enemy card's own background art, dimmed so sprites stand out
++            Image(
++                bitmap = bgImage, contentDescription = null, filterQuality = FilterQuality.None,
++                contentScale = ContentScale.Crop,
++                modifier = Modifier.size(maxWidth).graphicsLayer { alpha = 0.55f }
++            )
++        }
 +        Column {
 +            for (y in 0 until TacticsBattle.H) {
 +                Row {
@@ -4582,18 +4852,21 @@ index 0000000..85c7795
 +                        val unit = if (selected != null && dest == p) selected
 +                        else battle.at(p)?.takeIf { !(it === selected && dest != null && dest != p) }
 +                        val bg = when {
-+                            p in attackTiles -> Color(0x55E53935)
-+                            p == dest -> Color(0x5542A5F5)
-+                            p in moveTiles -> Color(0x3342A5F5)
-+                            (x + y) % 2 == 0 -> MaterialTheme.colorScheme.surfaceVariant
-+                            else -> MaterialTheme.colorScheme.surface
++                            p in attackTiles -> Color(0x99E53935)
++                            p in splashTiles -> Color(0x77FF7043)
++                            p == dest -> Color(0x9942A5F5)
++                            p in moveTiles -> Color(0x5542A5F5)
++                            auraTiles[p] == TacticsBattle.PLAYER -> Color(0x4443A047)
++                            auraTiles[p] == TacticsBattle.ENEMY -> Color(0x55AB47BC)
++                            (x + y) % 2 == 0 -> Color(0x99161D2E)
++                            else -> Color(0x99202A40)
 +                        }
 +                        Box(
 +                            Modifier
 +                                .size(cell)
 +                                .background(bg)
 +                                .border(BorderStroke(if (unit != null && unit === selected) 2.dp else 0.5.dp,
-+                                    if (unit != null && unit === selected) Color(0xFFFFC107) else Color(0x22000000)))
++                                    if (unit != null && unit === selected) Color(0xFFFFC107) else Color(0x1FFFFFFF)))
 +                                .clickable { onTap(p) },
 +                            contentAlignment = Alignment.Center
 +                        ) {
@@ -4601,8 +4874,8 @@ index 0000000..85c7795
 +                                letter = letters[unit.id], targeted = unit.id in intended, intent = battle.intents.firstOrNull { it.enemyId == unit.id }?.let { i ->
 +                                    val tl = i.targetId?.let { letters[it] }
 +                                    when {
-+                                        tl == null -> "🛡"
-+                                        i.skill == "Signature" -> "★$tl"
++                                        tl == null -> "✦"
++                                        i.skill == Skills.SIGNATURE.name -> "★$tl"
 +                                        else -> "⚔$tl"
 +                                    }
 +                                })
@@ -4611,6 +4884,16 @@ index 0000000..85c7795
 +                }
 +            }
 +        }
++    }
++    // the platform's front edge, so the board reads as a raised slab
++    Box(
++        Modifier
++            .padding(horizontal = 6.dp)
++            .fillMaxWidth()
++            .height(8.dp)
++            .clip(RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp))
++            .background(Brush.verticalGradient(listOf(Color(0xFF2A2350), Color(0xFF07090F))))
++    )
 +    }
 +}
 +
@@ -4652,9 +4935,11 @@ index 0000000..85c7795
 +            if (letter != null) append(letter)
 +            if (targeted) append("!")
 +            if (f.acted && f.side == TacticsBattle.PLAYER && f.alive) append("✓")
++            if (f.auraTurns > 0) append("✦")
++            if (f.buffs.isNotEmpty()) append("▲")
 +        }
 +        if (tags.isNotEmpty()) Text(tags, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-+            color = if (targeted) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurface, modifier = Modifier.align(Alignment.TopStart).padding(2.dp))
++            color = if (targeted) Color(0xFFFF5252) else Color.White, modifier = Modifier.align(Alignment.TopStart).padding(2.dp))
 +        if (intent != null && f.alive) Text(intent, fontSize = 10.sp, color = Color(0xFFE53935), modifier = Modifier.align(Alignment.TopEnd).padding(2.dp))
 +        if (f.status.isNotEmpty()) Text(f.status.keys.joinToString("") { statusIcon(it) }, fontSize = 9.sp,
 +            modifier = Modifier.align(Alignment.BottomStart).padding(bottom = 4.dp, start = 2.dp))
@@ -4664,7 +4949,7 @@ index 0000000..85c7795
 +}
 +
 +private fun statusIcon(s: Status) = when (s) {
-+    Status.BURN -> "🔥"; Status.POISON -> "☠"; Status.SLOW -> "🐌"; Status.STUN -> "💫"
++    Status.BURN -> "🔥"; Status.POISON -> "🦠"; Status.SLOW -> "🐌"; Status.STUN -> "💫"
 +    Status.WEAKEN -> "⬇"; Status.CURSE -> "✖"; Status.REGEN -> "✚"
 +}
 +
@@ -4715,7 +5000,8 @@ index 0000000..85c7795
 +    if (unitId == null) {
 +        Text(
 +            if (busy) "…" else "Tap one of your Digimon (A, B, C) to select it. Tap a blue tile to move, or tap a red enemy to attack it. " +
-+                    "Tap any Digimon to see its details and skills. A red ! marks who an enemy will hit.",
++                    "Tap any Digimon to see its details and skills. A red ! marks who an enemy will hit. " +
++                    "✦ = aura (green tiles help you, purple tiles hurt you), ▲ = buffed.",
 +            style = MaterialTheme.typography.bodySmall
 +        )
 +        return
@@ -4725,7 +5011,8 @@ index 0000000..85c7795
 +        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
 +            Text("${f.name} · ${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", fontWeight = FontWeight.SemiBold)
 +            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()}" +
-+                    (if (f.shield > 0) " · Shield ${f.shield.toInt()}" else ""), style = MaterialTheme.typography.bodySmall)
++                    (if (f.shield > 0) " · Firewall ${f.shield.toInt()}" else ""), style = MaterialTheme.typography.bodySmall)
++            BuffLines(f)
 +            when (step) {
 +                is Step.Selected -> Text("Tap a blue tile to move (its own tile to stay), or tap a red enemy to attack it.", style = MaterialTheme.typography.bodySmall)
 +                is Step.Moved -> {
@@ -4769,7 +5056,8 @@ index 0000000..85c7795
 +                        "Damage ${fc.damage}${if (fc.doubles) " ×2 (faster)" else ""} · Hit ${fc.hit}% · Crit ${fc.crit}%" +
 +                                when (fc.advantage) { 1 -> " · ▲ advantage"; -1 -> " · ▼ they have advantage"; else -> "" } +
 +                                (if (fc.kills) " · KO" else "") +
-+                                (if (fc.splashTargets > 0) " · also hits ${fc.splashTargets} nearby" else ""),
++                                (if (step.skill.area == Area.MULTI3) " · hits 3 random enemies"
++                                else if (fc.splashTargets > 0) " · also hits ${fc.splashTargets} more" else ""),
 +                        style = MaterialTheme.typography.bodySmall
 +                    )
 +                    Text(
@@ -4796,9 +5084,10 @@ index 0000000..85c7795
 +            Text("${if (f.side == TacticsBattle.ENEMY) "Enemy: " else ""}${f.name}", fontWeight = FontWeight.SemiBold)
 +            Text("${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", style = MaterialTheme.typography.bodySmall)
 +            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/3 · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()} · " +
-+                    "CRIT ${f.crit.toInt()}% · EVA ${f.eva.toInt()} · RES ${f.res.toInt()}" + (if (f.shield > 0) " · Shield ${f.shield.toInt()}" else ""),
++                    "CRIT ${f.crit.toInt()}% · EVA ${f.eva.toInt()} · RES ${f.res.toInt()}" + (if (f.shield > 0) " · Firewall ${f.shield.toInt()}" else ""),
 +                style = MaterialTheme.typography.bodySmall)
 +            if (f.status.isNotEmpty()) Text("Status: " + f.status.entries.joinToString { (k, v) -> "${k.label} ($v)" }, style = MaterialTheme.typography.bodySmall)
++            BuffLines(f)
 +            Text(Skills.fieldPassive(f.field), style = MaterialTheme.typography.bodySmall)
 +            Text(Skills.attrTrait(f.attr), style = MaterialTheme.typography.bodySmall)
 +            if (intent != null && f.alive) {
@@ -4816,6 +5105,15 @@ index 0000000..85c7795
 +}
 +
 +@Composable
++private fun BuffLines(f: Fighter) {
++    val buffs = f.buffText()
++    if (buffs.isNotEmpty()) Text("▲ Buffs: " + buffs.joinToString(" · "), color = Color(0xFF81C784), style = MaterialTheme.typography.bodySmall)
++    f.aura?.takeIf { f.auraTurns > 0 }?.let {
++        Text("✦ ${it.name} (${f.auraTurns} turns): ${it.description}", color = Color(0xFFCE93D8), style = MaterialTheme.typography.bodySmall)
++    }
++}
++
++@Composable
 +private fun SpriteImage(bytes: ByteArray, width: Int, height: Int, modifier: Modifier, flip: Boolean) {
 +    val context = LocalContext.current
 +    val data = remember(bytes) { BitmapData(bytes, width, height).getImageBitmap(context, 1, false) }
@@ -4829,10 +5127,10 @@ index 0000000..85c7795
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/source/CardLibrary.kt b/app/src/main/java/com/github/nacabaro/vbhelper/source/CardLibrary.kt
 new file mode 100644
-index 0000000..5f18666
+index 0000000..f237ae1
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/source/CardLibrary.kt
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,211 @@
 +package com.github.nacabaro.vbhelper.source
 +
 +import android.content.Context
@@ -4902,7 +5200,10 @@ index 0000000..5f18666
 +            val logo = card.spriteData.sprites[0].pixelData
 +            val name = card.spriteData.text
 +
-+            val alreadyHave = db.cardDao().getCardByCardId(cardId).any { it.logo.contentEquals(logo) }
++            val copies = db.cardDao().getCardByCardId(cardId).filter { it.logo.contentEquals(logo) }
++            val alreadyHave = copies.isNotEmpty()
++            // Cards imported before backgrounds were saved get theirs now.
++            copies.forEach { importer.saveBackground(it.id, card) }
 +            if (alreadyHave) {
 +                DebugLog.i(TAG, "Skipped $label: card $cardId ($name) is already imported")
 +                ImportSummary(skipped = listOf(name))
@@ -5671,10 +5972,10 @@ index 0000000..0ae98a6
 +}
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/source/TacticsRepository.kt b/app/src/main/java/com/github/nacabaro/vbhelper/source/TacticsRepository.kt
 new file mode 100644
-index 0000000..8fdf6c2
+index 0000000..4869308
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/source/TacticsRepository.kt
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,123 @@
 +package com.github.nacabaro.vbhelper.source
 +
 +import android.content.Context
@@ -5733,6 +6034,8 @@ index 0000000..8fdf6c2
 +    suspend fun stored(id: Long): TacticsDtos.Fighter? = withContext(Dispatchers.IO) { dao.getStored(id) }
 +
 +    suspend fun cards(): List<TacticsDtos.CardOption> = withContext(Dispatchers.IO) { dao.getCards() }
++
++    suspend fun background(cardId: Long) = withContext(Dispatchers.IO) { dao.getBackground(cardId) }
 +
 +    fun spec(f: TacticsDtos.Fighter, skills: List<Skill>, hpScale: Double = 1.0, atkScale: Double = 1.0): FighterSpec {
 +        val battles = f.wins + f.losses
@@ -5796,6 +6099,28 @@ index 0000000..8fdf6c2
 +        return byStage.getValue(best).random(random)
 +    }
 +}
+diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/ui/theme/Theme.kt b/app/src/main/java/com/github/nacabaro/vbhelper/ui/theme/Theme.kt
+index 6673275..cf88f5f 100644
+--- a/app/src/main/java/com/github/nacabaro/vbhelper/ui/theme/Theme.kt
++++ b/app/src/main/java/com/github/nacabaro/vbhelper/ui/theme/Theme.kt
+@@ -2,7 +2,6 @@ package com.github.nacabaro.vbhelper.ui.theme
+ 
+ import android.app.Activity
+ import android.os.Build
+-import androidx.compose.foundation.isSystemInDarkTheme
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.darkColorScheme
+ import androidx.compose.material3.dynamicDarkColorScheme
+@@ -35,7 +34,8 @@ private val LightColorScheme = lightColorScheme(
+ 
+ @Composable
+ fun VBHelperTheme(
+-    darkTheme: Boolean = isSystemInDarkTheme(),
++    // VBHelper Custom: always dark.
++    darkTheme: Boolean = true,
+     // Dynamic color is available on Android 12+
+     dynamicColor: Boolean = true,
+     content: @Composable () -> Unit
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/utils/DebugLog.kt b/app/src/main/java/com/github/nacabaro/vbhelper/utils/DebugLog.kt
 new file mode 100644
 index 0000000..3c1f31a
