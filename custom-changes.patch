@@ -5842,7 +5842,7 @@ index cc9d3d0..f84ae66 100644
                          NavigationItems.Scan.route.replace(
 diff --git a/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 new file mode 100644
-index 0000000..e61f153
+index 0000000..4f7d550
 --- /dev/null
 +++ b/app/src/main/java/com/github/nacabaro/vbhelper/screens/tactics/TacticsScreen.kt
 @@ -0,0 +1,894 @@
@@ -5859,6 +5859,7 @@ index 0000000..e61f153
 +import androidx.compose.foundation.layout.Column
 +import androidx.compose.foundation.layout.ExperimentalLayoutApi
 +import androidx.compose.foundation.layout.FlowRow
++import androidx.compose.foundation.layout.PaddingValues
 +import androidx.compose.foundation.layout.Row
 +import androidx.compose.foundation.layout.Spacer
 +import androidx.compose.foundation.layout.fillMaxSize
@@ -6268,7 +6269,6 @@ index 0000000..e61f153
 +                style = MaterialTheme.typography.bodySmall, color = Color(0xFF81C784))
 +        }
 +
-+        IntentList(battle)
 +
 +        if (winner != null) {
 +            Card(Modifier.fillMaxWidth()) {
@@ -6309,6 +6309,8 @@ index 0000000..e61f153
 +                }
 +            )
 +        }
++
++        IntentList(battle)
 +
 +        Text("Log", style = MaterialTheme.typography.labelLarge)
 +        battle.log.take(8).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -6586,7 +6588,15 @@ index 0000000..e61f153
 +    }
 +}
 +
-+@OptIn(ExperimentalLayoutApi::class)
++@Composable
++@NonSkippableComposable
++private fun SmallButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, primary: Boolean = false) {
++    val pad = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
++    if (primary) Button(onClick = onClick, enabled = enabled, contentPadding = pad, modifier = modifier.height(36.dp)) { Text(text, fontSize = 12.sp, maxLines = 1) }
++    else OutlinedButton(onClick = onClick, enabled = enabled, contentPadding = pad, modifier = modifier.height(36.dp)) { Text(text, fontSize = 12.sp, maxLines = 1) }
++}
++
++/** The action menu: kept compact and right under the board so a whole turn fits on screen. */
 +@Composable
 +@NonSkippableComposable
 +private fun ActionPanel(
@@ -6599,6 +6609,7 @@ index 0000000..e61f153
 +    onConfirm: () -> Unit,
 +    onCancel: () -> Unit
 +) {
++    var details by remember { mutableStateOf(false) }
 +    val unitId = when (step) {
 +        is Step.Selected -> step.unit
 +        is Step.Moved -> step.unit
@@ -6612,76 +6623,65 @@ index 0000000..e61f153
 +    }
 +    if (unitId == null) {
 +        Text(
-+            if (busy) "…" else "Tap one of your Digimon (A, B, C) to select it. Tap a blue tile to move, or tap a red enemy to attack it. " +
-+                    "Tap any Digimon to see its details and skills. A red ! marks who an enemy will hit. " +
-+                    "✦ = aura (green tiles help you, purple tiles hurt you), ▲ = buffed.",
++            if (busy) "…" else "Tap A, B or C to select · tap an enemy to attack · tap anyone for details. ! = targeted, ✦ aura, ▲ buffed.",
 +            style = MaterialTheme.typography.bodySmall
 +        )
 +        return
 +    }
 +    val f = battle.byId(unitId)
 +    Card(Modifier.fillMaxWidth()) {
-+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-+            Text("${f.name} · ${f.stage.label} · ${f.attr.label} · ${f.field?.label ?: "No Field"}", fontWeight = FontWeight.SemiBold)
-+            Text("HP ${f.hp.toInt()}/${f.maxHp.toInt()} · Energy ${f.energy}/${f.energyMax} · ATK ${f.atk.toInt()} · DEF ${f.def.toInt()} · SPD ${f.spd.toInt()}" +
-+                    (if (f.shield > 0) " · Firewall ${f.shield.toInt()}" else ""), style = MaterialTheme.typography.bodySmall)
-+            BuffLines(f)
++        Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
++            Text(
++                "${f.name} · HP ${f.hp.toInt()}/${f.maxHp.toInt()} · ⚡${f.energy}/${f.energyMax}" +
++                        (if (f.shield > 0) " · ◆${f.shield.toInt()}" else ""),
++                fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1
++            )
 +            when (step) {
-+                is Step.Selected -> Text("Tap a blue tile to move (its own tile to stay), or tap a red enemy to attack it.", style = MaterialTheme.typography.bodySmall)
++                is Step.Selected -> Text("Tap a blue tile to move (or its own tile to stay), or tap an enemy.", style = MaterialTheme.typography.bodySmall)
 +                is Step.Moved -> {
-+                    Text("Choose an action (or tap a red enemy to attack it):", style = MaterialTheme.typography.bodySmall)
-+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-+                        f.skills.forEach { s ->
-+                            val inRange = s.kind != SkillKind.ATTACK || battle.targetsFrom(f, step.dest, s).isNotEmpty()
-+                            val usable = battle.canUse(f, s) && inRange
-+                            val why = when {
-+                                battle.costOf(f, s) > f.energy -> "needs ${battle.costOf(f, s)} Energy"
-+                                !inRange -> "no enemy in range from here"
-+                                !battle.canUse(f, s) -> "can't use now"
-+                                else -> null
++                    f.skills.chunked(2).forEach { pair ->
++                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
++                            pair.forEach { s ->
++                                val inRange = s.kind != SkillKind.ATTACK || battle.targetsFrom(f, step.dest, s).isNotEmpty()
++                                val cost = battle.costOf(f, s)
++                                SmallButton("${s.name} ${if (cost == 0) "" else "⚡$cost"}", { onSkill(s) },
++                                    Modifier.weight(1f), enabled = battle.canUse(f, s) && inRange)
 +                            }
-+                            OutlinedButton(onClick = { onSkill(s) }, enabled = usable, modifier = Modifier.fillMaxWidth()) {
-+                                Column(Modifier.fillMaxWidth()) {
-+                                    Text("${s.name} · ${skillCostText(s)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-+                                    Text(s.description, fontSize = 12.sp)
-+                                    if (why != null) Text(why, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
-+                                }
-+                            }
-+                        }
-+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-+                            OutlinedButton(onClick = onGuard) { Text("Guard (half damage)", fontSize = 12.sp) }
-+                            OutlinedButton(onClick = onWait) { Text("Wait", fontSize = 12.sp) }
-+                            OutlinedButton(onClick = onCancel) { Text("Cancel", fontSize = 12.sp) }
++                            if (pair.size == 1) Spacer(Modifier.weight(1f))
 +                        }
 +                    }
++                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
++                        SmallButton("Guard", onGuard, Modifier.weight(1f))
++                        SmallButton("Wait", onWait, Modifier.weight(1f))
++                        SmallButton("Back", onCancel, Modifier.weight(1f))
++                        SmallButton(if (details) "Hide" else "Info", { details = !details }, Modifier.weight(1f))
++                    }
++                    if (details) f.skills.forEach { s ->
++                        Text("${s.name} (${skillCostText(s)}): ${s.description}", fontSize = 11.sp)
++                    }
++                    if (details) BuffLines(f)
 +                }
 +                is Step.Targeting -> {
-+                    Text("${step.skill.name}: ${step.skill.description}", style = MaterialTheme.typography.bodySmall)
-+                    Text("Tap a red enemy to see the forecast.", style = MaterialTheme.typography.bodySmall)
-+                    OutlinedButton(onClick = onCancel) { Text("Cancel") }
++                    Text("${step.skill.name}: tap a red enemy.", style = MaterialTheme.typography.bodySmall)
++                    SmallButton("Back", onCancel)
 +                }
 +                is Step.Confirm -> {
 +                    val t = battle.byId(step.target)
 +                    val fc = step.forecast
-+                    Text("${step.skill.name} → ${t.name} (HP ${t.hp.toInt()})", fontWeight = FontWeight.SemiBold)
-+                    Text(step.skill.description, style = MaterialTheme.typography.bodySmall)
++                    Text("${step.skill.name} → ${t.name} (HP ${t.hp.toInt()})", fontSize = 12.sp, maxLines = 1)
 +                    Text(
-+                        "Damage ${fc.damage}${if (fc.doubles) " ×2 (faster)" else ""} · Hit ${fc.hit}% · Crit ${fc.crit}%" +
-+                                when (fc.advantage) { 1 -> " · ▲ advantage"; -1 -> " · ▼ they have advantage"; else -> "" } +
++                        "Dmg ${fc.damage}${if (fc.doubles) "×2" else ""} · Hit ${fc.hit}% · Crit ${fc.crit}%" +
++                                when (fc.advantage) { 1 -> " · ▲"; -1 -> " · ▼"; else -> "" } +
 +                                (if (fc.kills) " · KO" else "") +
-+                                (if (step.skill.area == Area.MULTI3) " · hits 3 random enemies"
-+                                else if (fc.splashTargets > 0) " · also hits ${fc.splashTargets} more" else ""),
-+                        style = MaterialTheme.typography.bodySmall
++                                (if (step.skill.area == Area.MULTI3) " · 3 random"
++                                else if (fc.splashTargets > 0) " · +${fc.splashTargets} more" else "") +
++                                (if (fc.counter) " · counter ${fc.counterDamage} (${fc.counterHit}%)" else " · no counter"),
++                        fontSize = 12.sp, fontWeight = FontWeight.SemiBold
 +                    )
-+                    Text(
-+                        if (fc.counter) "Counter: ${t.name} hits back for ${fc.counterDamage} (${fc.counterHit}%)" else "No counter",
-+                        style = MaterialTheme.typography.bodySmall
-+                    )
-+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-+                        Button(onClick = onConfirm) { Text("Confirm") }
-+                        OutlinedButton(onClick = onCancel) { Text("Other actions") }
++                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
++                        SmallButton("Confirm", onConfirm, Modifier.weight(1f), primary = true)
++                        SmallButton("Other actions", onCancel, Modifier.weight(1f))
 +                    }
-+                    Text("Tap another red enemy to switch target.", style = MaterialTheme.typography.bodySmall)
 +                }
 +                else -> {}
 +            }
