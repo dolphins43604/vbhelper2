@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080c18">
+  <title>Ichimoku Scanner</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="appbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M3 21c4 0 5-6 9-6s5 6 9 6 5-6 8-6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M3 27c4 0 5-4 9-4s5 4 9 4 5-4 8-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".5"/></svg>
+      <div>
+        <h1>Ichimoku Scanner</h1>
+        <p id="paramLine" class="sub">18 / 52 / 104 / 26 · 1D 2D 3D</p>
+      </div>
+    </div>
+    <button id="btnSettings" class="icon-btn" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+    </button>
+  </header>
+
+  <main id="main">
+    <div id="keyBanner" class="banner" hidden>
+      <strong>Add your Alpaca API keys to start.</strong>
+      <span>A free paper-trading account at alpaca.markets is enough.</span>
+      <button class="btn small" data-open="settings">Open settings</button>
+    </div>
+
+    <!-- ── Universe ─────────────────────────────────────────── -->
+    <section class="panel">
+      <label class="field">
+        <span class="label">Stock universe</span>
+        <select id="universe">
+          <option value="full">Full US market (~8,000)</option>
+          <option value="list">Full list (~800)</option>
+          <option value="sp500">S&amp;P 500 (150 subset)</option>
+          <option value="ndx">Nasdaq 100</option>
+          <option value="custom">Custom only</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="label">Add / override tickers</span>
+        <textarea id="custom" rows="2" placeholder="AAPL, MSFT, NVDA" autocapitalize="characters" autocomplete="off" spellcheck="false"></textarea>
+      </label>
+      <div class="field">
+        <span class="label">Timeframes</span>
+        <div class="chips" id="tfChips">
+          <label class="chip tf1"><input type="checkbox" value="1" checked><span>1D</span></label>
+          <label class="chip tf2"><input type="checkbox" value="2" checked><span>2D</span></label>
+          <label class="chip tf3"><input type="checkbox" value="3" checked><span>3D</span></label>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Filters ──────────────────────────────────────────── -->
+    <details class="panel collapsible" id="filtersPanel">
+      <summary><span>Breakout filters</span><span class="summary-note" id="filterNote">none</span></summary>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" id="f_tk"><span class="sw"></span><span>Require TK cross (Tenkan &gt; Kijun)</span></label>
+        <label class="toggle"><input type="checkbox" id="f_chikou"><span class="sw"></span><span>Require Chikou confirmed</span></label>
+        <label class="toggle"><input type="checkbox" id="f_fresh"><span class="sw"></span><span>Fresh only (crossed this bar)</span></label>
+      </div>
+      <label class="field range">
+        <span class="label">Min strength above cloud <output id="o_strength">0.0%</output></span>
+        <input type="range" id="f_strength" min="0" max="20" step="0.5" value="0">
+      </label>
+
+      <h3 class="group">Reversal</h3>
+      <label class="toggle"><input type="checkbox" id="f_reversal"><span class="sw"></span><span>Require prior downtrend (was below cloud)</span></label>
+      <label class="field range">
+        <span class="label">Lookback bars <output id="o_revlb">20</output></span>
+        <input type="range" id="f_revlb" min="5" max="60" step="1" value="20">
+      </label>
+
+      <h3 class="group">Bounce</h3>
+      <label class="toggle"><input type="checkbox" id="f_bounce"><span class="sw"></span><span>Bounces only (Kijun or cloud)</span></label>
+      <div class="row2">
+        <label class="field range">
+          <span class="label">Tolerance <output id="o_btol">3.0%</output></span>
+          <input type="range" id="f_btol" min="0.5" max="10" step="0.5" value="3">
+        </label>
+        <label class="field">
+          <span class="label">Lookback bars</span>
+          <input type="number" id="f_blb" min="2" max="50" value="10" inputmode="numeric">
+        </label>
+      </div>
+
+      <h3 class="group">Volume (20-day avg)</h3>
+      <div class="row2">
+        <label class="field">
+          <span class="label">Min avg volume</span>
+          <select id="f_vol">
+            <option value="0">Any</option>
+            <option value="100000">100K+</option>
+            <option value="250000">250K+</option>
+            <option value="500000">500K+</option>
+            <option value="1000000">1M+</option>
+            <option value="2000000">2M+</option>
+            <option value="5000000">5M+</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label class="field" id="volCustomWrap" hidden>
+          <span class="label">Custom</span>
+          <input type="number" id="f_volc" min="0" step="50000" value="500000" inputmode="numeric">
+        </label>
+      </div>
+    </details>
+
+    <!-- ── Parameters ───────────────────────────────────────── -->
+    <details class="panel collapsible">
+      <summary><span>Ichimoku parameters</span><span class="summary-note" id="paramNote">18 / 52 / 104 / 26</span></summary>
+      <div class="row4">
+        <label class="field"><span class="label">Tenkan</span><input type="number" id="p_tenkan" min="1" max="500" value="18" inputmode="numeric"></label>
+        <label class="field"><span class="label">Kijun</span><input type="number" id="p_kijun" min="1" max="500" value="52" inputmode="numeric"></label>
+        <label class="field"><span class="label">Senkou B</span><input type="number" id="p_senkou" min="1" max="500" value="104" inputmode="numeric"></label>
+        <label class="field"><span class="label">Displace</span><input type="number" id="p_disp" min="1" max="200" value="26" inputmode="numeric"></label>
+      </div>
+      <label class="field">
+        <span class="label">History to download</span>
+        <select id="p_years">
+          <option value="2">2 years (fastest)</option>
+          <option value="3" selected>3 years</option>
+          <option value="5">5 years</option>
+        </select>
+      </label>
+      <button class="btn ghost small" id="btnResetParams">Reset to defaults</button>
+    </details>
+
+    <!-- ── Results ──────────────────────────────────────────── -->
+    <section id="resultsSection" hidden>
+      <div class="results-head">
+        <div>
+          <h2 id="resultsTitle">Results</h2>
+          <p class="sub" id="resultsMeta"></p>
+        </div>
+        <button class="btn small" id="btnCsv">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          CSV
+        </button>
+      </div>
+      <div class="result-controls">
+        <select id="sortBy" aria-label="Sort by">
+          <option value="str_desc">Strength ↓</option>
+          <option value="str_asc">Strength ↑</option>
+          <option value="vol_desc">Avg volume ↓</option>
+          <option value="az">Ticker A→Z</option>
+          <option value="tfs">Timeframes hit</option>
+        </select>
+        <div class="chips small" id="showTfChips">
+          <label class="chip tf1"><input type="checkbox" value="1" checked><span>1D</span></label>
+          <label class="chip tf2"><input type="checkbox" value="2" checked><span>2D</span></label>
+          <label class="chip tf3"><input type="checkbox" value="3" checked><span>3D</span></label>
+        </div>
+        <label class="chip plain"><input type="checkbox" id="tkOnly"><span>TK only</span></label>
+      </div>
+      <input type="search" id="searchBox" class="search" placeholder="Find ticker…" autocapitalize="characters" autocomplete="off">
+      <div id="results"></div>
+      <button class="btn ghost wide" id="btnMore" hidden>Show more</button>
+    </section>
+
+    <div id="emptyState" class="empty">
+      <svg viewBox="0 0 64 40" aria-hidden="true"><path d="M2 28c8 0 10-12 18-12s10 12 18 12 10-12 18-12 6 4 6 4" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M2 36c8 0 10-6 18-6s10 6 18 6 10-6 18-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".4"/></svg>
+      <div class="empty-title">Ready to scan</div>
+      <div>Pick a universe and filters, then tap <strong>Start scan</strong>.</div>
+    </div>
+  </main>
+
+  <!-- ── Sticky scan bar ────────────────────────────────────── -->
+  <footer class="scanbar">
+    <div class="progress" id="progressWrap" hidden>
+      <div class="progress-text"><span id="progressText">Starting…</span><span id="progressCount"></span></div>
+      <div class="bar"><div class="fill" id="progressFill"></div></div>
+    </div>
+    <div class="scan-actions">
+      <button class="btn primary wide" id="btnScan">Start scan</button>
+      <button class="btn danger" id="btnStop" hidden>Stop</button>
+    </div>
+  </footer>
+
+  <!-- ── Chart sheet ────────────────────────────────────────── -->
+  <div class="sheet" id="chartSheet" hidden>
+    <div class="sheet-head">
+      <button class="icon-btn" data-close aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="sheet-title"><span id="chTicker">—</span><span id="chBadges"></span></div>
+    </div>
+    <div class="sheet-body">
+      <div class="chips small" id="chTfChips"></div>
+      <div id="chStats" class="stats"></div>
+      <div id="chFlags" class="flags"></div>
+      <div id="chart" class="chart"><div class="chart-loading">Loading chart…</div></div>
+      <p class="hint">Pinch or drag to zoom and pan. Double-tap to reset.</p>
+    </div>
+  </div>
+
+  <!-- ── Settings sheet ─────────────────────────────────────── -->
+  <div class="sheet" id="settingsSheet" hidden>
+    <div class="sheet-head">
+      <button class="icon-btn" data-close aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="sheet-title">Settings</div>
+    </div>
+    <div class="sheet-body">
+      <section class="panel">
+        <h3 class="group first">Alpaca API keys</h3>
+        <p class="sub">Free at alpaca.markets → Paper account → API Keys. Stored only on this phone.</p>
+        <label class="field"><span class="label">API key ID</span><input id="s_key" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="PK…"></label>
+        <label class="field"><span class="label">Secret key</span><input id="s_secret" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <div class="row-actions">
+          <button class="btn primary" id="btnSaveKeys">Save &amp; test</button>
+          <span id="keyStatus" class="status"></span>
+        </div>
+      </section>
+      <section class="panel">
+        <h3 class="group first">Data cache</h3>
+        <p class="sub">Downloaded price history is kept for 8 hours so re-scanning with new filters is instant.</p>
+        <div class="row-actions">
+          <button class="btn ghost" id="btnClearCache">Clear cache</button>
+          <span id="cacheStatus" class="status"></span>
+        </div>
+      </section>
+      <section class="panel about">
+        <h3 class="group first">About</h3>
+        <p class="sub">Daily bars from Alpaca, split and dividend adjusted. Uses full-market (SIP) volume, which the free plan allows for data at least 15 minutes old. If your account can't access it, the app falls back to IEX-only volume, which runs much lower. Not investment advice.</p>
+        <p class="sub" id="versionLine">v1.0.0</p>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

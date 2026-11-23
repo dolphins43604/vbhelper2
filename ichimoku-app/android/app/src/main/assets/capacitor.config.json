@@ -1,0 +1,19 @@
+{
+	"appId": "com.ichimoku.scanner",
+	"appName": "Ichimoku Scanner",
+	"webDir": "www",
+	"backgroundColor": "#080c18",
+	"android": {
+		"backgroundColor": "#080c18"
+	},
+	"plugins": {
+		"CapacitorHttp": {
+			"enabled": true
+		},
+		"SystemBars": {
+			"insetsHandling": "css",
+			"style": "DARK",
+			"initialViewportFitValueHint": "cover"
+		}
+	}
+}
